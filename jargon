@@ -922,11 +922,17 @@ def download_pids(model):
         if not argv:
             continue
         # Only the real downloader: argv[0] is voxtype (or curl fetching it).
+        # Match --model's actual value, not a substring of the joined argv --
+        # "large-v3" is a substring of "large-v3-turbo" and would otherwise
+        # match (and cancel) the wrong download.
         base = os.path.basename(argv[0])
-        joined = " ".join(argv)
-        if base == "voxtype" and "--download" in argv and model in joined:
-            out.append(pid)
-        elif base in ("curl", "wget") and f"ggml-{model}.bin" in joined:
+        if base == "voxtype" and "--download" in argv and "--model" in argv:
+            i = argv.index("--model")
+            if i + 1 < len(argv) and argv[i + 1] == model:
+                out.append(pid)
+        elif base in ("curl", "wget") and any(a == f"ggml-{model}.bin"
+                                              or a.endswith(f"/ggml-{model}.bin")
+                                              for a in argv):
             out.append(pid)
     return out
 
@@ -937,14 +943,21 @@ def cmd_download(a, state):
         if not cur["active"]:
             print(json.dumps({"cancelled": None}) if a.json else " nothing downloading")
             return
+        # Never killpg: that sends the signal to every process sharing the
+        # download's process group, and there is no reliable guarantee that
+        # group contains only the download. One that was ever started outside
+        # jargon's own detached Popen -- by hand, from another launcher, or
+        # because setsid silently failed to isolate it -- can end up sharing
+        # a group with the desktop session itself, and killpg on that group
+        # takes out Hyprland and the shell with it. download_pids() already
+        # finds every matching process individually by scanning /proc, so
+        # killing each one by exact pid is just as effective and cannot
+        # reach anything else.
         for pid in download_pids(cur["model"]):
             try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         time.sleep(0.5)
         try:
             os.remove(part_path(cur["model"]))
