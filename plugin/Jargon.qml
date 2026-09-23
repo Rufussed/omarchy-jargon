@@ -100,8 +100,20 @@ Item {
   }
 
   function toggleList(index) {
-    if (!root.lists || index < 0 || index >= root.lists.length) return
-    editor.exec([root.bin, "toggle", root.lists[index].name, "--json"])
+    if (!root.lists || index < 0 || index >= root.lists.length || root.busy) return
+    root.busy = true
+    // Optimistic: flip the dot the instant it is clicked. The round trip
+    // through the CLI (Python startup, reading state, re-tokenizing the
+    // prompt) is 50-300ms -- long enough that waiting for it before showing
+    // anything reads as the click having done nothing. The real response,
+    // moments later, either confirms this or corrects it (e.g. a list that
+    // would go over budget gets refused server-side and snaps back).
+    var name = root.lists[index].name
+    var lists = root.lists.map(function (l) {
+      return l.name === name ? Object.assign({}, l, { enabled: !l.enabled }) : l
+    })
+    root.state = Object.assign({}, root.state, { lists: lists })
+    editor.exec([root.bin, "toggle", name, "--json"])
   }
 
   function addTerm(text) {

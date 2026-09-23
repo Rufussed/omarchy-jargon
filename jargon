@@ -425,25 +425,32 @@ def set_icon(on, section="right"):
     # only removes the bar-widget, and can never take the overlay down with
     # it -- see bar-icon/BarWidget.qml for why they are split.
     here = icon_section()
+    # `omarchy plugin enable/disable` are themselves slow -- each is a full
+    # catalog scan plus a shell IPC round trip, on the order of a second,
+    # nothing to do with anything jargon adds. That's already plenty of
+    # settling time between the two calls; the flat sleeps this used to add
+    # on top were pure waste, stacking to 1.5-2s of visible lag on a single
+    # click. Poll briefly only to confirm, rather than always paying a fixed
+    # worst-case wait.
+    def wait_until(pred, tries=8, interval=0.1):
+        for _ in range(tries):
+            if pred():
+                return True
+            time.sleep(interval)
+        return pred()
+
     if on:
         if here:
             return f"icon already in the {here} section"
         subprocess.run(["omarchy", "plugin", "disable", ICON_ID], capture_output=True)
-        # disable and enable are separate IPC round-trips, each reading
-        # shell.json, modifying it and writing it back; back-to-back with no
-        # gap, enable's read can race disable's write and the disable is
-        # silently lost. A short wait avoids it; verifying and retrying once
-        # covers the rest.
-        time.sleep(0.4)
         p = subprocess.run(["omarchy", "plugin", "enable", ICON_ID, section],
                            capture_output=True, text=True)
         if p.returncode != 0:
             die(f"could not place the icon: {p.stderr.strip() or p.stdout.strip()}")
-        time.sleep(0.4)
-        if not icon_section():
+        if not wait_until(icon_section):
             subprocess.run(["omarchy", "plugin", "enable", ICON_ID, section],
                            capture_output=True, text=True)
-            time.sleep(0.4)
+            wait_until(icon_section)
         return f"ear icon added to the {section} of the bar"
     if not here:
         return "icon not in the bar"
@@ -451,7 +458,7 @@ def set_icon(on, section="right"):
                        capture_output=True, text=True)
     if p.returncode != 0:
         die(f"could not remove the icon: {p.stderr.strip() or p.stdout.strip()}")
-    time.sleep(0.3)
+    wait_until(lambda: not icon_section())
     return "ear icon removed"
 
 
@@ -943,26 +950,31 @@ def cmd_download(a, state):
         if not cur["active"]:
             print(json.dumps({"cancelled": None}) if a.json else " nothing downloading")
             return
-        # Never killpg: that sends the signal to every process sharing the
-        # download's process group, and there is no reliable guarantee that
-        # group contains only the download. One that was ever started outside
-        # jargon's own detached Popen -- by hand, from another launcher, or
-        # because setsid silently failed to isolate it -- can end up sharing
-        # a group with the desktop session itself, and killpg on that group
-        # takes out Hyprland and the shell with it. download_pids() already
-        # finds every matching process individually by scanning /proc, so
-        # killing each one by exact pid is just as effective and cannot
-        # reach anything else.
-        for pid in download_pids(cur["model"]):
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        time.sleep(0.5)
+        pids = download_pids(cur["model"])
+        # Unlink first, before signalling anything. download_state() reports
+        # "active" purely by that file's existence, so removing it is what
+        # actually makes the UI show "cancelled" -- immediately, on the very
+        # next poll, with nothing to wait for. curl holds the file open by fd
+        # rather than by path, so unlinking it while curl is still writing
+        # does not error; the space is freed once curl's fd closes.
+        # (This used to sleep(0.5) before removing the file, so a poll landing
+        # in that half-second window would still read "active" and the click
+        # looked like it had done nothing.)
         try:
             os.remove(part_path(cur["model"]))
         except OSError:
             pass
+        # Never killpg: that signals every process sharing the download's
+        # group, and there is no guarantee that group contains only the
+        # download -- one started outside jargon's own detached Popen can
+        # end up sharing the desktop session's group, and killpg on that
+        # takes out Hyprland and the shell with it. Kill each matched pid
+        # individually instead; fire-and-forget, nothing to wait for.
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         print(json.dumps({"cancelled": cur["model"]}) if a.json
               else f" {RED}cancelled{OFF} {cur['model']}")
         return
