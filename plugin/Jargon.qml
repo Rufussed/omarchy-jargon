@@ -32,6 +32,7 @@ Item {
   // they crowd. Step everything down one notch.
   readonly property int fontBody: Math.max(9, Style.font.small - 2)
   readonly property int fontSmall: Math.max(8, Style.font.small - 4)
+  readonly property int fontTiny: Math.max(7, root.fontSmall - 1)
   readonly property int fontHeading: Math.max(11, Style.font.small + 1)
   property int cardWidth: Math.round(panel.width * 0.8)
   property int cardHeight: Math.round(panel.height * 0.9)
@@ -374,7 +375,7 @@ Item {
       id: card
       width: root.cardWidth
       height: root.cardHeight
-      radius: root.cornerRadius
+      radius: 0
       anchors.centerIn: parent
       color: root.background
       borderSpec: root.borderSpec
@@ -499,12 +500,12 @@ Item {
             Rectangle {
               width: parent.width
               height: Style.space(8)
-              radius: height / 2
+              radius: 0
               color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
               Rectangle {
                 width: Math.min(1, root.tokenCount / root.budget) * parent.width
                 height: parent.height
-                radius: height / 2
+                radius: 0
                 color: root.state && root.state.over ? "#e05561"
                      : root.state && root.state.warn ? "#d9a343" : "#6aab73"
                 Behavior on width { NumberAnimation { duration: 120 } }
@@ -564,7 +565,7 @@ Item {
                 delegate: Rectangle {
                   width: list.width
                   height: rowCol.height + Style.space(12)
-                  radius: Style.space(6)
+                  radius: 0
                   color: index === root.selectedIndex ? root.selectedBackground : "transparent"
 
                   MouseArea {
@@ -689,7 +690,7 @@ Item {
                 delegate: Rectangle {
                   width: termList.width
                   height: termText.height + Style.space(8)
-                  radius: Style.space(6)
+                  radius: 0
                   color: termMouse.containsMouse ? root.selectedBackground : "transparent"
 
                   MouseArea {
@@ -741,7 +742,7 @@ Item {
                 anchors.bottom: parent.bottom
                 width: parent.width
                 height: input.height + Style.space(14)
-                radius: Style.space(6)
+                radius: 0
                 color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
                 border.width: 1
                 border.color: input.activeFocus
@@ -835,12 +836,12 @@ Item {
                   Rectangle {
                     width: parent.width
                     height: Style.space(8)
-                    radius: height / 2
+                    radius: 0
                     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
                     Rectangle {
                       width: parent.width * ((root.dl && root.dl.percent ? root.dl.percent : 0) / 100)
                       height: parent.height
-                      radius: height / 2
+                      radius: 0
                       color: "#6aab73"
                       Behavior on width { NumberAnimation { duration: 200 } }
                     }
@@ -863,7 +864,7 @@ Item {
                   anchors.verticalCenter: parent.verticalCenter
                   width: cancelText.width + Style.space(20)
                   height: cancelText.height + Style.space(10)
-                  radius: height / 2
+                  radius: 0
                   color: cancelMouse.containsMouse
                          ? Qt.rgba(0.88, 0.33, 0.38, 0.9) : "transparent"
                   border.width: 1
@@ -900,7 +901,7 @@ Item {
                 delegate: Rectangle {
                   height: chipRow.height + Style.space(8)
                   width: chipRow.width + Style.space(18)
-                  radius: height / 2
+                  radius: 0
                   color: modelData.active ? root.selectedBackground : "transparent"
                   border.width: 1
                   border.color: modelData.active
@@ -920,7 +921,7 @@ Item {
                       color: modelData.active ? root.selectedText : root.foreground
                       opacity: modelData.active ? 1 : (modelData.installed ? 0.6 : 0.35)
                       font.family: Style.font.menuFamily
-                      font.pixelSize: root.fontSmall
+                      font.pixelSize: root.fontTiny
                       font.bold: modelData.active
 
                       MouseArea {
