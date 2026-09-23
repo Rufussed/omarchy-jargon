@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Show recent transcriptions with the model and timing that produced them.
+#   ./bench            last 10
+#   ./bench 3          last 3
+set -euo pipefail
+n="${1:-10}"
+journalctl --user -u voxtype --no-pager -o cat \
+  | grep -E 'Loading transcription model:|Transcribing [0-9.]+s|Transcription completed' \
+  | sed -u 's/\x1b\[[0-9;]*m//g' \
+  | awk '
+      /Loading transcription model:/ { model = $NF; next }
+      /Transcribing/                 { for (i=1;i<=NF;i++) if ($i ~ /^[0-9.]+s$/) { audio=$i; break }; next }
+      /Transcription completed in/   {
+          for (i=1;i<=NF;i++) if ($i ~ /^[0-9.]+s:$/) { took=$i; sub(":","",took) }
+          text = $0; sub(/.*completed in [0-9.]+s: /, "", text)
+          printf "%-9s  audio %-6s  took %-6s  %s\n", model, audio, took, text
+      }' \
+  | tail -"$n"

@@ -1,0 +1,43 @@
+{
+  "$schema": "./groups.schema.json",
+  "version": 1,
+  "description": "Curated Whisper initial_prompt vocabulary for Omarchy Voxtype. Terms are chosen because a small Whisper model mishears them, not merely because they are technical. Terms any model already spells (API, JSON, CSS, HTML, GPU) are deliberately absent: they cost budget and buy nothing.",
+  "preamble": "Technical dictation about software development.",
+  "groups": {
+    "3d": {
+      "label": "3D / graphics",
+      "description": "glTF pipelines, Blender, real-time rendering.",
+      "terms": ["GLB", "glTF", "Blender", "Mixamo", "three.js", "WebGL", "WebGPU", "mesh", "UV", "mipmap", "anisotropy", "shader", "emissive", "albedo", "normal map", "viewport", "bounding box", "skinning", "rig", "LOD"]
+    },
+    "web": {
+      "label": "Web / frontend",
+      "description": "Build tools and browser APIs.",
+      "terms": ["Vite", "TypeScript", "WebSocket", "WebAssembly", "WebP", "npm", "pnpm", "SvelteKit", "Tailwind", "Vue", "Astro", "ESLint", "Prettier", "bundler", "polyfill", "viewport"]
+    },
+    "backend": {
+      "label": "Backend / data",
+      "description": "Servers, databases, schemas.",
+      "terms": ["Fastify", "SQLite", "Postgres", "Redis", "nginx", "Docker", "Kubernetes", "schema", "migration", "endpoint", "payload", "middleware", "idempotent", "webhook"]
+    },
+    "git": {
+      "label": "Git / workflow",
+      "description": "Version control verbs that are ordinary English elsewhere.",
+      "terms": ["repo", "commit", "branch", "rebase", "merge", "stash", "cherry-pick", "upstream", "squash", "monorepo", "diff", "changeset"]
+    },
+    "linux": {
+      "label": "Linux / Omarchy",
+      "description": "This desktop and the system under it.",
+      "terms": ["Hyprland", "Omarchy", "Wayland", "Arch", "systemd", "pacman", "AUR", "Quickshell", "QML", "tmux", "Neovim", "dotfiles", "Voxtype"]
+    },
+    "ai": {
+      "label": "AI / agents",
+      "description": "Model and agent vocabulary.",
+      "terms": ["Claude", "Anthropic", "LLM", "prompt", "token", "embedding", "inference", "agentic", "MCP", "Whisper", "fine-tune", "context window"]
+    },
+    "core": {
+      "label": "Everyday dev",
+      "description": "Small, high-frequency words a base model still gets wrong. Cheap; most users want this one.",
+      "terms": ["cache", "config", "refactor", "async", "boolean", "enum", "regex", "CLI", "stdout", "localhost", "auth", "CSV", "UUID", "CRUD"]
+    }
+  }
+}

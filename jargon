@@ -1,0 +1,1018 @@
+#!/usr/bin/env python3
+"""jargon — manage Voxtype's dictation vocabulary (whisper.initial_prompt).
+
+Prevention, not correction: this only ever writes initial_prompt. Replacement
+keys are personal to your voice, so teach-voxtype owns those.
+
+Vocabulary lives in *lists*. Every list is editable and removable, including
+the ones shipped with jargon: those are only a starting point, copied into
+your state on first run. Enabled lists are concatenated into the prompt.
+"""
+import argparse, json, os, re, shutil, signal, subprocess, sys, textwrap, time
+
+HERE = os.path.dirname(os.path.realpath(__file__))  # realpath: we are run through a symlink
+SEED = os.path.join(HERE, "library", "groups.json")
+STATE_DIR = os.path.expanduser("~/.config/jargon")
+STATE = os.path.join(STATE_DIR, "state.json")
+CACHE_DIR = os.path.expanduser("~/.local/share/jargon")
+MODEL_DIR = os.path.expanduser("~/.local/share/voxtype/models")
+FALLBACK_BUDGET = 224   # whisper.cpp n_text_ctx / 2, for the base.en default
+CHARS_PER_TOKEN = 2.6   # only used if the model file cannot be read; dense
+                        # technical word lists run ~3 chars/token, so this
+                        # deliberately over-counts rather than under-counts
+WARN_AT = 0.85
+
+BOLD, DIM, RED, YEL, GRN, OFF = "\033[1m", "\033[2m", "\033[31m", "\033[33m", "\033[32m", "\033[0m"
+if not sys.stdout.isatty():
+    BOLD = DIM = RED = YEL = GRN = OFF = ""
+
+
+def die(msg):
+    print(f"{RED}error:{OFF} {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def load_seed():
+    """Shipped starting lists. Copied into state once, then user-owned."""
+    with open(SEED) as f:
+        return json.load(f)
+
+
+
+def blank_list(description=""):
+    return {"description": description, "terms": [], "enabled": False}
+
+
+def load_state():
+    try:
+        with open(STATE) as f:
+            s = json.load(f)
+    except FileNotFoundError:
+        s = {}
+    except json.JSONDecodeError:
+        broken = STATE + ".corrupt"
+        os.replace(STATE, broken)
+        print(f"{YEL}warning:{OFF} state was unreadable; moved to {broken} "
+              f"and started fresh. See {AUDIT} for the last good contents.",
+              file=sys.stderr)
+        s = {}
+
+    if "lists" not in s:
+        seed = load_seed()
+        lists, order = {}, []
+        # v1 kept shipped groups separate from user libraries. Both become
+        # lists: the distinction never earned its complexity.
+        old_libs = s.pop("libraries", {})
+        old_active = s.pop("active", None)
+        enabled_groups = set()
+        if old_libs:
+            act = old_libs.get(old_active, {})
+            enabled_groups = set(act.get("groups", []))
+        for gid, g in seed["groups"].items():
+            lists[gid] = {"description": g["description"],
+                          "terms": list(g["terms"]),
+                          "enabled": gid in enabled_groups or not old_libs}
+            order.append(gid)
+        for name, libdata in old_libs.items():
+            terms = libdata.get("terms", [])
+            if not terms:
+                continue
+            key = "mine" if name == old_active else name
+            while key in lists:
+                key += "-1"
+            lists[key] = {"description": f"Carried over from the {name} library.",
+                          "terms": list(terms),
+                          "enabled": name == old_active}
+            order.append(key)
+        if not old_libs:
+            lists["mine"] = blank_list("Your own words.")
+            lists["mine"]["enabled"] = True
+            order.append("mine")
+        s["lists"] = lists
+        s["order"] = order
+        s["preamble"] = seed["preamble"]
+
+    s.setdefault("order", list(s["lists"]))
+    for name in s["lists"]:
+        if name not in s["order"]:
+            s["order"].append(name)
+    s["order"] = [n for n in s["order"] if n in s["lists"]]
+    s.setdefault("preamble", load_seed()["preamble"])
+    s.setdefault("focus", s["order"][0] if s["order"] else None)
+    if s["focus"] not in s["lists"]:
+        s["focus"] = s["order"][0] if s["order"] else None
+    s.setdefault("last_written", None)
+    s.setdefault("autoapply", True)
+    for l in s["lists"].values():
+        l.setdefault("terms", [])
+        l.setdefault("description", "")
+        l.setdefault("enabled", False)
+    return s
+
+
+def require_list(state, name):
+    if name not in state["lists"]:
+        known = ", ".join(state["order"]) or "none"
+        die(f"no list named {name!r} (have: {known})")
+    return state["lists"][name]
+
+
+def target_list(state, name=None):
+    """Which list an add/remove acts on: --to, else the focused one."""
+    if name:
+        return name, require_list(state, name)
+    if not state["focus"]:
+        die("no lists yet; make one with: jargon new <name>")
+    return state["focus"], state["lists"][state["focus"]]
+def now():
+    return subprocess.run(["date", "+%Y-%m-%d %H:%M:%S"],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def save_usage_only(s):
+    """Persist usage counters without touching vocabulary another process may
+    have just written."""
+    fresh = load_state()
+    fresh["usage"] = s.get("usage", {})
+    fresh["usage_last_scan"] = s.get("usage_last_scan")
+    save_state(fresh)
+
+
+AUDIT = os.path.join(STATE_DIR, "audit.log")
+
+
+def audit(s, note=""):
+    """Append-only record of who changed the vocabulary and to what.
+
+    Group selections have twice been reverted by something other than the
+    command that was running. Rather than guess, log every write with its argv
+    so the next occurrence names its own culprit.
+    """
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        libs = s.get("libraries", {})
+        snap = {n: {"groups": l.get("groups", []), "terms": len(l.get("terms", []))}
+                for n, l in libs.items()}
+        with open(AUDIT, "a") as f:
+            f.write(json.dumps({"at": now(), "pid": os.getpid(),
+                                "argv": sys.argv[1:], "active": s.get("active"),
+                                "note": note, "libraries": snap}) + "\n")
+    except Exception:
+        pass  # never let logging break a write
+
+
+def save_state(s):
+    audit(s)
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = f"{STATE}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, STATE)
+
+
+def voxtype(*args, check=True):
+    if not shutil.which("voxtype"):
+        die("voxtype is not installed")
+    p = subprocess.run(["voxtype", *args], capture_output=True, text=True)
+    if check and p.returncode != 0:
+        die(f"voxtype {' '.join(args)} failed: {p.stderr.strip() or p.stdout.strip()}")
+    return p.stdout.strip()
+
+
+def current_prompt():
+    out = voxtype("config", "get", "whisper.initial_prompt", check=False)
+    return "" if (not out or out == "null" or out.startswith("error")) else out
+
+
+
+
+# ---------------------------------------------------------------- tokenizer
+#
+# Counting tokens by dividing characters was wrong by 34% on a real prompt and
+# silently truncated the vocabulary it was supposed to protect. The whisper
+# .en models carry the GPT-2 vocabulary inside the ggml file, and GPT-2 orders
+# token ids by merge rank, so exact BPE needs no dependency and no network:
+# read the vocab out of the model the daemon is actually using.
+
+_BPE = {"rank": None, "budget": None, "model": None}
+_PAT = re.compile(r"'s|'t|'re|'ve|'m|'ll|'d| ?[^\W\d_]+| ?\d+| ?[^\s\w]+|\s+(?!\S)|\s+")
+
+
+def _model_path():
+    name = voxtype("config", "get", "whisper.model", check=False) or "base.en"
+    p = os.path.join(MODEL_DIR, f"ggml-{name}.bin")
+    return (p, name) if os.path.exists(p) else (None, name)
+
+
+def _load_vocab():
+    """Vocabulary + context size from the ggml model, cached to disk."""
+    if _BPE["rank"] is not None:
+        return
+    path, name = _model_path()
+    cache = os.path.join(CACHE_DIR, f"vocab-{name}.json")
+    try:
+        with open(cache) as f:
+            blob = json.load(f)
+        _BPE["rank"] = {s.encode("latin-1"): i for i, s in enumerate(blob["vocab"])}
+        _BPE["budget"] = blob["budget"]
+        _BPE["model"] = name
+        return
+    except Exception:
+        pass
+    if not path:
+        return
+    try:
+        import struct
+        with open(path, "rb") as f:
+            f.read(4)                                  # magic
+            h = struct.unpack("<11i", f.read(44))      # hparams
+            n_text_ctx = h[5]
+            n_mel, n_fft = struct.unpack("<2i", f.read(8))
+            f.read(4 * n_mel * n_fft)                  # mel filters
+            n = struct.unpack("<i", f.read(4))[0]
+            toks = []
+            for _ in range(n):
+                ln = struct.unpack("<I", f.read(4))[0]
+                toks.append(f.read(ln))
+        _BPE["rank"] = {t: i for i, t in enumerate(toks)}
+        _BPE["budget"] = n_text_ctx // 2
+        _BPE["model"] = name
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(cache, "w") as f:
+            json.dump({"budget": _BPE["budget"],
+                       "vocab": [t.decode("latin-1") for t in toks]}, f)
+    except Exception:
+        pass
+
+
+def budget():
+    _load_vocab()
+    return _BPE["budget"] or FALLBACK_budget()
+
+
+def _bpe(word):
+    rank = _BPE["rank"]
+    parts = [bytes([b]) for b in word]
+    while len(parts) > 1:
+        best, bi = None, -1
+        for i in range(len(parts) - 1):
+            r = rank.get(parts[i] + parts[i + 1])
+            if r is not None and (best is None or r < best):
+                best, bi = r, i
+        if bi < 0:
+            break
+        parts[bi:bi + 2] = [parts[bi] + parts[bi + 1]]
+    return parts
+
+
+def tokens(text):
+    _load_vocab()
+    if not _BPE["rank"]:
+        return int(len(text) / CHARS_PER_TOKEN) + 1   # conservative fallback
+    n = 0
+    for piece in _PAT.findall(text):
+        n += len(_bpe(piece.encode("utf-8")))
+    return n
+
+
+
+
+def foreign_text(state):
+    """Whatever someone else (teach-voxtype, or you by hand) put in the prompt."""
+    cur, last = current_prompt(), state.get("last_written")
+    if not cur:
+        return ""
+    if last is None:
+        return cur
+    if cur == last:
+        return ""
+    if cur.startswith(last):
+        return cur[len(last):].strip(" ,.")
+    return cur
+
+
+def list_tokens(state, name):
+    l = state["lists"][name]
+    return tokens(", ".join(l["terms"])) if l["terms"] else 0
+
+
+def compose(state):
+    parts = [state["preamble"]] if state["preamble"] else []
+    terms, seen = [], set()
+    for name in state["order"]:
+        l = state["lists"][name]
+        if not l["enabled"]:
+            continue
+        for t in l["terms"]:
+            if t.lower() not in seen:
+                seen.add(t.lower())
+                terms.append(t)
+    if terms:
+        parts.append("Terms: " + ", ".join(terms) + ".")
+    return " ".join(parts), terms
+def meter(n):
+    width = 30
+    filled = min(width, round(width * n / budget()))
+    color = RED if n > budget() else (YEL if n > budget() * WARN_AT else GRN)
+    bar = color + "█" * filled + OFF + DIM + "·" * (width - filled) + OFF
+    return f"{bar} {color}{n}{OFF} / {budget()} tokens"
+
+
+
+# ---------------------------------------------------------------- commands
+
+def projected(state):
+    """What the prompt would cost right now, foreign text included."""
+    text, _ = compose(state)
+    foreign = foreign_text(state)
+    return tokens(text + (" " + foreign if foreign else ""))
+
+
+def refuse(a, what, n):
+    """Report a change declined for want of budget.
+
+    Refusing at the edit keeps the configured state always applicable, rather
+    than letting it drift over the cap and discovering it at apply time.
+    """
+    over = n - budget()
+    if getattr(a, "json", False):
+        print(json.dumps({"refused": what, "tokens": n, "budget": budget(), "over": over}))
+    else:
+        die(f"{what} would take the prompt to {n} tokens, {over} over the "
+            f"{budget()} cap. Turn a list off first, or pass --force.")
+
+
+def cmd_lists(a, state):
+    counts = state.get("usage", {})
+    print()
+    for name in state["order"]:
+        l = state["lists"][name]
+        mark = f"{GRN}\u25cf{OFF}" if l["enabled"] else f"{DIM}\u25cb{OFF}"
+        focus = f"{GRN}\u2039{OFF}" if name == state["focus"] else " "
+        hits = sum(counts.get(t, 0) for t in l["terms"])
+        used = f"{GRN}{hits} used{OFF}" if hits else f"{DIM}\u00b7{OFF}"
+        print(f" {mark}{focus} {BOLD}{name:<14}{OFF} {DIM}{len(l['terms']):>3} terms"
+              f"  {list_tokens(state, name):>4} tok{OFF}  {used}")
+        if l["description"]:
+            print(f"     {DIM}{l['description']}{OFF}")
+    print(f"\n{DIM}enable/disable <list>  ·  new <list>  ·  rm <list>  ·  "
+          f"add <term> --to <list>{OFF}\n")
+
+
+def cmd_show(a, state):
+    names = a.lists or state["order"]
+    counts = state.get("usage", {})
+    for name in names:
+        l = require_list(state, name)
+        mark = f"{GRN}\u25cf on{OFF}" if l["enabled"] else f"{DIM}\u25cb off{OFF}"
+        print(f"\n {BOLD}{name}{OFF}  {mark}  {DIM}{list_tokens(state, name)} tok{OFF}")
+        if l["description"]:
+            print(f" {DIM}{l['description']}{OFF}")
+        print()
+        for t in l["terms"]:
+            hits = counts.get(t, 0)
+            print(f"   {t:<20} {GRN}{hits} used{OFF}" if hits else f"   {t:<20} {DIM}\u00b7{OFF}")
+    print()
+
+
+def cmd_enable(a, state):
+    for name in a.lists:
+        l = require_list(state, name)
+        if l["enabled"]:
+            continue
+        l["enabled"] = True
+        n = projected(state)
+        if n > budget() and not getattr(a, "force", False):
+            l["enabled"] = False
+            save_state(state)
+            refuse(a, f"enabling {name}", n)
+            return
+    save_state(state)
+    _emit(a, state) if getattr(a, "json", False) else cmd_status(a, state)
+
+
+def cmd_disable(a, state):
+    for name in a.lists:
+        require_list(state, name)["enabled"] = False
+    save_state(state)
+    cmd_status(a, state)
+
+
+def cmd_toggle(a, state):
+    for name in a.lists:
+        l = require_list(state, name)
+        was = l["enabled"]
+        l["enabled"] = not was
+        if l["enabled"]:
+            n = projected(state)
+            if n > budget() and not getattr(a, "force", False):
+                l["enabled"] = was
+                save_state(state)
+                refuse(a, f"enabling {name}", n)
+                return
+    save_state(state)
+    _emit(a, state)
+
+
+def cmd_focus(a, state):
+    require_list(state, a.name)
+    state["focus"] = a.name
+    save_state(state)
+    _emit(a, state)
+
+
+def cmd_new(a, state):
+    name = a.name
+    if name in state["lists"]:
+        die(f"list {name!r} already exists")
+    state["lists"][name] = blank_list(a.description or "")
+    state["lists"][name]["enabled"] = True
+    state["order"].append(name)
+    state["focus"] = name
+    save_state(state)
+    if getattr(a, "json", False):
+        _emit(a, state)
+    else:
+        print(f" {GRN}created{OFF} {name} (enabled, empty, now focused)")
+        cmd_status(a, state)
+
+
+def cmd_rm(a, state):
+    name = a.name
+    require_list(state, name)
+    del state["lists"][name]
+    state["order"] = [n for n in state["order"] if n != name]
+    if state["focus"] == name:
+        state["focus"] = state["order"][0] if state["order"] else None
+    save_state(state)
+    if getattr(a, "json", False):
+        _emit(a, state)
+    else:
+        print(f" {RED}removed{OFF} list {name}")
+
+
+def cmd_rename(a, state):
+    require_list(state, a.name)
+    if a.newname in state["lists"]:
+        die(f"list {a.newname!r} already exists")
+    state["lists"][a.newname] = state["lists"].pop(a.name)
+    state["order"] = [a.newname if n == a.name else n for n in state["order"]]
+    if state["focus"] == a.name:
+        state["focus"] = a.newname
+    save_state(state)
+    if getattr(a, "json", False):
+        _emit(a, state)
+    else:
+        print(f" {GRN}renamed{OFF} {a.name} \u2192 {a.newname}")
+
+
+def cmd_describe(a, state):
+    require_list(state, a.name)["description"] = a.text
+    save_state(state)
+    _emit(a, state) if getattr(a, "json", False) else print(" description updated")
+
+
+def cmd_add(a, state):
+    name, l = target_list(state, a.to)
+    quiet = getattr(a, "json", False)
+    for t in a.terms:
+        t = t.strip()
+        if not t or t.lower() in {x.lower() for x in l["terms"]}:
+            continue
+        l["terms"].append(t)
+        # Only an enabled list costs anything; a word parked in a disabled one
+        # is free until you switch it on.
+        n = projected(state)
+        if l["enabled"] and n > budget() and not getattr(a, "force", False):
+            l["terms"].pop()
+            save_state(state)
+            refuse(a, f"adding {t!r}", n)
+            return
+        if not quiet:
+            print(f" {GRN}+{OFF} {t}  {DIM}\u2192 {name}{OFF}")
+    save_state(state)
+    _emit(a, state) if quiet else cmd_status(a, state)
+
+
+def cmd_remove(a, state):
+    name, l = target_list(state, getattr(a, "from_list", None))
+    quiet = getattr(a, "json", False)
+    low = {t.lower() for t in a.terms}
+    if not quiet:
+        for t in l["terms"]:
+            if t.lower() in low:
+                print(f" {RED}-{OFF} {t}  {DIM}\u2190 {name}{OFF}")
+    l["terms"] = [t for t in l["terms"] if t.lower() not in low]
+    save_state(state)
+    _emit(a, state) if quiet else cmd_status(a, state)
+
+
+def cmd_prompt(a, state):
+    text, _ = compose(state)
+    foreign = foreign_text(state)
+    if foreign and not a.mine_only:
+        text = (text + " " + foreign).strip()
+    print(text)
+
+
+def cmd_status(a, state):
+    text, terms = compose(state)
+    foreign = foreign_text(state)
+    total = tokens(text + (" " + foreign if foreign else ""))
+    on = [n for n in state["order"] if state["lists"][n]["enabled"]]
+    print()
+    print(f" {BOLD}lists on{OFF}  {', '.join(on) or DIM + 'none' + OFF}"
+          f"   {DIM}({len(state['lists'])} total){OFF}")
+    print(f" {BOLD}focus{OFF}     {state['focus'] or DIM + 'none' + OFF}"
+          f"   {DIM}(where add/remove go){OFF}")
+    if foreign:
+        print(f" {BOLD}other{OFF}     {DIM}{tokens(foreign)} tok not written by jargon{OFF}")
+    print(f" {BOLD}terms{OFF}     {len(terms)}")
+    print(f" {BOLD}budget{OFF}    {meter(total)}")
+    if total > budget():
+        print(f"\n {RED}over budget by {total - budget()} tokens{OFF} — Whisper drops the")
+        print(f" {RED}earliest terms silently. Turn a list off before applying.{OFF}")
+    elif total > budget() * WARN_AT:
+        print(f"\n {YEL}close to the cap; overflow is silent.{OFF}")
+    applied = current_prompt()
+    want = (text + (" " + foreign if foreign else "")).strip()
+    if applied != want:
+        print(f"\n {YEL}not applied{OFF} — run {BOLD}jargon apply{OFF}.")
+    print()
+
+
+def voxtype_busy():
+    """True while a recording or transcription is in flight.
+
+    Restarting then would throw away what is being dictated, which is the one
+    way an automatic apply could do real damage.
+    """
+    out = voxtype("status", "--format", "json", check=False)
+    try:
+        return json.loads(out).get("class") in ("recording", "transcribing")
+    except Exception:
+        return False
+
+
+def cmd_auto(a, state):
+    state["autoapply"] = (a.value == "on")
+    save_state(state)
+    print(f" auto-apply {GRN if state['autoapply'] else DIM}"
+          f"{'on' if state['autoapply'] else 'off'}{OFF}")
+
+
+def cmd_apply(a, state):
+    text, _ = compose(state)
+    foreign = foreign_text(state)
+    final = (text + (" " + foreign if foreign else "")).strip()
+    n = tokens(final)
+    auto = getattr(a, "auto", False)
+    if auto:
+        if not state.get("autoapply", True):
+            return
+        if final == current_prompt():
+            return                       # nothing changed
+        if n > budget():
+            print(json.dumps({"skipped": "over budget", "tokens": n}))
+            return
+        if voxtype_busy():
+            print(json.dumps({"skipped": "recording"}))
+            return
+    if n > budget() and not a.force:
+        die(f"{n} tokens exceeds the {budget()}-token cap; Whisper would truncate "
+            f"silently. Turn a list off, or pass --force.")
+    voxtype("config", "set", "whisper.initial_prompt", final)
+    state["last_written"] = text
+    save_state(state)
+    if auto:
+        subprocess.run(["systemctl", "--user", "restart", "voxtype"],
+                       capture_output=True, text=True)
+        print(json.dumps({"applied": True, "tokens": n}))
+        return
+    print(f" {GRN}written{OFF}  {meter(n)}")
+    if foreign:
+        print(f" {DIM}preserved {tokens(foreign)} tok written by something else{OFF}")
+    if a.no_restart:
+        print(f" {DIM}not restarting; run: systemctl --user restart voxtype{OFF}")
+        return
+    p = subprocess.run(["systemctl", "--user", "restart", "voxtype"],
+                       capture_output=True, text=True)
+    if p.returncode:
+        print(f" {YEL}restart failed:{OFF} {p.stderr.strip()}")
+    else:
+        print(f" {GRN}voxtype restarted{OFF} — hold F9 and try the terms.")
+
+
+def cmd_reset(a, state):
+    voxtype("config", "unset", "whisper.initial_prompt")
+    state["last_written"] = None
+    save_state(state)
+    print(f" {GRN}initial_prompt cleared{OFF} (lists kept)")
+
+
+def cmd_usage(a, state):
+    if a.rescan:
+        state["usage"] = {}
+        state["usage_last_scan"] = None
+    counts, n = scan_usage(state, since="ALL" if a.rescan else None)
+    state["usage_last_scan"] = now()
+    save_usage_only(state)
+    _, terms = compose(state)
+    rows = sorted(((counts.get(t, 0), t) for t in terms), key=lambda r: (-r[0], r[1].lower()))
+    used = [r for r in rows if r[0]]
+    cold = [r for r in rows if not r[0]]
+    print(f"\n {DIM}scanned {n} new transcript(s){OFF}\n")
+    if used:
+        top = max(c for c, _ in used)
+        for c, t in used:
+            bar = GRN + "\u258c" * max(1, round(12 * c / top)) + OFF
+            print(f"  {c:>4}  {bar:<24} {t}")
+    if cold:
+        print(f"\n {DIM}never seen ({len(cold)}) — first to cut if you go over budget:{OFF}")
+        print(textwrap.fill(", ".join(t for _, t in cold), 76,
+                            initial_indent="  " + DIM, subsequent_indent="  "), OFF)
+    print()
+
+
+def state_json(state):
+    text, terms = compose(state)
+    foreign = foreign_text(state)
+    total = tokens(text + (" " + foreign if foreign else ""))
+    counts = state.get("usage", {})
+    applied = current_prompt()
+    return {
+        "budget": budget(), "tokens": total,
+        "models": models_json(),
+        "over": total > budget(),
+        "warn": total > budget() * WARN_AT,
+        "dirty": applied != (text + (" " + foreign if foreign else "")).strip(),
+        "foreignTokens": tokens(foreign) if foreign else 0,
+        "termCount": len(terms),
+        "focus": state["focus"],
+        "autoapply": state.get("autoapply", True),
+        "lists": [
+            {"name": n,
+             "description": state["lists"][n]["description"],
+             "enabled": state["lists"][n]["enabled"],
+             "focused": n == state["focus"],
+             "terms": [{"term": t, "hits": counts.get(t, 0)}
+                       for t in state["lists"][n]["terms"]],
+             "tokens": list_tokens(state, n),
+             "hits": sum(counts.get(t, 0) for t in state["lists"][n]["terms"])}
+            for n in state["order"]
+        ],
+    }
+
+
+def _emit(a, state):
+    if getattr(a, "json", False):
+        print(json.dumps(state_json(state)))
+
+
+def cmd_json(a, state):
+    if not a.no_scan:
+        scan_usage(state)
+        state["usage_last_scan"] = now()
+        save_usage_only(state)
+    print(json.dumps(state_json(state)))
+
+def scan_usage(state, since=None):
+    """Count library terms appearing in voxtype transcripts.
+
+    The journal is the whole mechanism: voxtype logs every finished
+    transcription at INFO. Read-only, out of the dictation hot path, and
+    retroactive over whatever the journal still holds.
+    """
+    args = ["journalctl", "--user", "-u", "voxtype", "--no-pager", "-o", "cat"]
+    cursor = since if since is not None else state.get("usage_last_scan")
+    if cursor and cursor != "ALL":
+        args += ["--since", cursor]
+    p = subprocess.run(args, capture_output=True, text=True)
+    if p.returncode:
+        return {}, 0
+    lines = re.findall(r'Transcribed: "([^"]*)"', p.stdout)
+    counts = state.setdefault("usage", {})
+    all_terms = set()
+    for l in state["lists"].values():
+        all_terms |= set(l["terms"])
+    pats = {t: re.compile(r"(?<![\w-])" + re.escape(t) + r"(?![\w-])", re.I) for t in all_terms}
+    for line in lines:
+        for t, pat in pats.items():
+            n = len(pat.findall(line))
+            if n:
+                counts[t] = counts.get(t, 0) + n
+    return counts, len(lines)
+
+
+# ---------------------------------------------------------------- models
+#
+# The model is the other half of the same decision: the lists exist to prop
+# up a weak prior, and a bigger model needs less propping. It also sets the
+# token cap and the tokenizer, so the budget meter changes with it.
+
+# Sizes are the real byte counts of the ggml files, used for the progress bar.
+MODELS = [
+    ("tiny.en",          77_704_715, "Fastest, least accurate"),
+    ("base.en",         147_964_211, "Voxtype's default"),
+    ("small.en",        487_614_201, "Noticeably better on technical words"),
+    ("medium.en",     1_533_763_059, "Strong; wants a GPU"),
+    ("large-v3-turbo", 1_623_856_685, "Near-large accuracy, far less compute"),
+    ("large-v3",      3_095_033_483, "Best available; slowest"),
+]
+MODEL_SIZE = {n: b for n, b, _ in MODELS}
+
+
+def human(n):
+    for unit, div in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if n >= div:
+            return f"{n / div:.1f} {unit}"
+    return f"{n} B"
+
+
+def part_path(name):
+    return os.path.join(MODEL_DIR, f".ggml-{name}.bin.part")
+
+
+def download_state():
+    """Progress for any model download in flight.
+
+    Reads the .part file voxtype writes, so it reports a download this process
+    did not start -- including one begun from the panel before a restart.
+    """
+    for name, total, _ in MODELS:
+        p = part_path(name)
+        if os.path.exists(p):
+            try:
+                got = os.path.getsize(p)
+            except OSError:
+                got = 0
+            return {"active": True, "model": name, "bytes": got, "total": total,
+                    "percent": min(99, int(got * 100 / total)) if total else 0,
+                    "human": f"{human(got)} of {human(total)}"}
+    return {"active": False}
+
+
+def download_pids(model):
+    """PIDs of the voxtype download for `model`, found by reading /proc.
+
+    Never pkill -f: that pattern also matches the shell that invoked us (and
+    this script's own command line), so it kills the caller.
+    """
+    me = os.getpid()
+    out = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == me:
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv = f.read().split(b"\0")
+        except OSError:
+            continue
+        argv = [a.decode("utf-8", "replace") for a in argv if a]
+        if not argv:
+            continue
+        # Only the real downloader: argv[0] is voxtype (or curl fetching it).
+        base = os.path.basename(argv[0])
+        joined = " ".join(argv)
+        if base == "voxtype" and "--download" in argv and model in joined:
+            out.append(pid)
+        elif base in ("curl", "wget") and f"ggml-{model}.bin" in joined:
+            out.append(pid)
+    return out
+
+
+def cmd_download(a, state):
+    if a.cancel:
+        cur = download_state()
+        if not cur["active"]:
+            print(json.dumps({"cancelled": None}) if a.json else " nothing downloading")
+            return
+        for pid in download_pids(cur["model"]):
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+        time.sleep(0.5)
+        try:
+            os.remove(part_path(cur["model"]))
+        except OSError:
+            pass
+        print(json.dumps({"cancelled": cur["model"]}) if a.json
+              else f" {RED}cancelled{OFF} {cur['model']}")
+        return
+
+    if a.status:
+        print(json.dumps(download_state()))
+        return
+
+    name = a.name
+    if name not in MODEL_SIZE:
+        die(f"unknown model {name!r}")
+    if name in installed_models():
+        print(json.dumps({"active": False, "already": True}) if a.json else " already installed")
+        return
+    # Detached: the panel polls --status rather than holding the process open.
+    subprocess.Popen(["setsid", "voxtype", "setup", "--download", "--model", name],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    time.sleep(0.5)
+    print(json.dumps(download_state()) if a.json
+          else f" downloading {name} ({human(MODEL_SIZE[name])})\u2026")
+
+
+def installed_models():
+    try:
+        return {f[5:-4] for f in os.listdir(MODEL_DIR)
+                if f.startswith("ggml-") and f.endswith(".bin")}
+    except OSError:
+        return set()
+
+
+def gpu_state():
+    out = voxtype("info", "accel", check=False)
+    for line in out.splitlines():
+        if "State:" in line:
+            return line.split("State:")[1].strip()
+    return "unknown"
+
+
+def models_json():
+    have = installed_models()
+    current = voxtype("config", "get", "whisper.model", check=False)
+    return {
+        "accel": gpu_state(),
+        "current": current,
+        "download": download_state(),
+        "list": [{"name": n,
+                  "size": human(model_bytes(n) or sz),
+                  "note": note,
+                  "installed": n in have,
+                  "active": n == current}
+                 for n, sz, note in MODELS],
+        "onDisk": human(sum(model_bytes(n) for n, _, _ in MODELS)),
+    }
+
+
+def cmd_models(a, state):
+    have = installed_models()
+    current = voxtype("config", "get", "whisper.model", check=False)
+    accel = gpu_state()
+    print(f"\n {DIM}running on {OFF}{BOLD}{accel}{OFF}\n")
+    for name, size, note in MODELS:
+        size = human(model_bytes(name) or size)
+        if name == current:
+            mark, style = f"{GRN}\u25cf{OFF}", BOLD
+        elif name in have:
+            mark, style = f"{DIM}\u25cb{OFF}", ""
+        else:
+            mark, style = f"{DIM}\u00b7{OFF}", DIM
+        tag = "" if name in have else f"  {DIM}(not downloaded){OFF}"
+        print(f" {mark} {style}{name:<16}{OFF} {DIM}{size:>7}{OFF}  {style}{note}{OFF}{tag}")
+    print(f"\n{DIM}jargon model <name>   downloads if needed, activates, restarts{OFF}\n")
+
+
+def model_bytes(name):
+    try:
+        return os.path.getsize(os.path.join(MODEL_DIR, f"ggml-{name}.bin"))
+    except OSError:
+        return 0
+
+
+def cmd_rmmodel(a, state):
+    name = a.name
+    if name not in installed_models():
+        die(f"{name} is not downloaded")
+    if name == voxtype("config", "get", "whisper.model", check=False):
+        die(f"{name} is the active model; switch to another one first")
+    freed = model_bytes(name)
+    os.remove(os.path.join(MODEL_DIR, f"ggml-{name}.bin"))
+    # The cached vocabulary belongs to that model file.
+    try:
+        os.remove(os.path.join(CACHE_DIR, f"vocab-{name}.json"))
+    except OSError:
+        pass
+    msg = {"removed": name, "freed": freed}
+    print(json.dumps(msg) if getattr(a, "json", False)
+          else f" {RED}removed{OFF} {name}  {DIM}({human(freed)} freed){OFF}")
+
+
+def cmd_model(a, state):
+    name = a.name
+    if name not in {m[0] for m in MODELS}:
+        die(f"unknown model {name!r} (try: jargon models)")
+    if name not in installed_models():
+        size = next(m[1] for m in MODELS if m[0] == name)
+        print(f" downloading {BOLD}{name}{OFF} ({size})\u2026 this runs once")
+        p = subprocess.run(["voxtype", "setup", "--download", "--model", name])
+        if p.returncode != 0:
+            die("download failed")
+    voxtype("setup", "model", "--set", name, "--restart")
+    print(f" {GRN}active{OFF}  {name}   {DIM}({gpu_state()}){OFF}")
+    # The cap and the tokenizer both come from the model file, so what fits
+    # just changed. Re-read before reporting.
+    _BPE["rank"] = _BPE["budget"] = None
+    text, _ = compose(state)
+    n = tokens(text)
+    print(f" {BOLD}budget{OFF}   {meter(n)}")
+    if n > budget():
+        print(f" {YEL}your vocabulary no longer fits this model's cap{OFF}")
+
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="jargon", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Dictation vocabulary for Voxtype, organised as editable lists.",
+        epilog=textwrap.dedent("""\
+            lists:
+              jargon lists                  what exists, what is on
+              jargon enable 3d web          turn lists on
+              jargon new wizard-game        create an empty list (and focus it)
+              jargon add "Mixamo" --to 3d   add a term to a list
+              jargon rm ai                  delete a list entirely
+              jargon apply                  write the prompt, restart voxtype
+
+            models:
+              jargon models                 what is installed, what is running
+              jargon model large-v3-turbo   download if needed, then activate
+            """))
+    sub = p.add_subparsers(dest="cmd")
+
+    sub.add_parser("status", help="what is on and what it costs")
+    sub.add_parser("lists", help="list the lists")
+    sh = sub.add_parser("show", help="print the terms in a list")
+    sh.add_argument("lists", nargs="*")
+    for name, help_ in (("enable", "turn lists on"), ("disable", "turn lists off")):
+        q = sub.add_parser(name, help=help_)
+        q.add_argument("lists", nargs="+")
+        q.add_argument("--force", action="store_true")
+        q.add_argument("--json", action="store_true")
+    tg = sub.add_parser("toggle", help="flip lists on/off")
+    tg.add_argument("lists", nargs="+"); tg.add_argument("--json", action="store_true")
+    tg.add_argument("--force", action="store_true")
+    fc = sub.add_parser("focus", help="set which list add/remove target")
+    fc.add_argument("name"); fc.add_argument("--json", action="store_true")
+    nw = sub.add_parser("new", help="create an empty list")
+    nw.add_argument("name"); nw.add_argument("--description", default="")
+    nw.add_argument("--json", action="store_true")
+    rmv = sub.add_parser("rm", help="delete a list")
+    rmv.add_argument("name"); rmv.add_argument("--json", action="store_true")
+    rn = sub.add_parser("rename", help="rename a list")
+    rn.add_argument("name"); rn.add_argument("newname"); rn.add_argument("--json", action="store_true")
+    ds = sub.add_parser("describe", help="set a list's description")
+    ds.add_argument("name"); ds.add_argument("text"); ds.add_argument("--json", action="store_true")
+    ad = sub.add_parser("add", help="add terms to a list")
+    ad.add_argument("terms", nargs="+"); ad.add_argument("--to")
+    ad.add_argument("--json", action="store_true")
+    ad.add_argument("--force", action="store_true")
+    rm = sub.add_parser("remove", help="remove terms from a list")
+    rm.add_argument("terms", nargs="+"); rm.add_argument("--from", dest="from_list")
+    rm.add_argument("--json", action="store_true")
+    pr = sub.add_parser("prompt", help="print the prompt that would be written")
+    pr.add_argument("--mine-only", action="store_true")
+    ap = sub.add_parser("apply", help="write initial_prompt and restart voxtype")
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--no-restart", action="store_true")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--auto", action="store_true",
+                    help="apply only if needed, safe and under budget; stay quiet")
+    au = sub.add_parser("auto", help="turn automatic applying on or off")
+    au.add_argument("value", choices=["on", "off"])
+    sub.add_parser("reset", help="clear initial_prompt entirely")
+    us = sub.add_parser("usage", help="how often each term appears in your dictation")
+    us.add_argument("--rescan", action="store_true")
+    js = sub.add_parser("json", help="machine-readable state (for the panel)")
+    js.add_argument("--no-scan", action="store_true")
+    sub.add_parser("models", help="list whisper models")
+    md = sub.add_parser("model", help="download + activate a model")
+    md.add_argument("name")
+    rmm = sub.add_parser("rm-model", help="delete a downloaded model file")
+    rmm.add_argument("name"); rmm.add_argument("--json", action="store_true")
+    dl = sub.add_parser("download", help="start/inspect/cancel a model download")
+    dl.add_argument("name", nargs="?")
+    dl.add_argument("--status", action="store_true")
+    dl.add_argument("--cancel", action="store_true")
+    dl.add_argument("--json", action="store_true")
+
+    a = p.parse_args()
+    state = load_state()
+    fn = {"status": cmd_status, "lists": cmd_lists, "show": cmd_show,
+          "enable": cmd_enable, "disable": cmd_disable, "toggle": cmd_toggle,
+          "focus": cmd_focus, "new": cmd_new, "rm": cmd_rm, "rename": cmd_rename,
+          "describe": cmd_describe, "add": cmd_add, "remove": cmd_remove,
+          "prompt": cmd_prompt, "apply": cmd_apply, "reset": cmd_reset,
+          "usage": cmd_usage, "json": cmd_json, "auto": cmd_auto,
+          "models": cmd_models, "model": cmd_model, "download": cmd_download,
+          "rm-model": cmd_rmmodel}.get(a.cmd or "status")
+    fn(a, state)
+
+
+if __name__ == "__main__":
+    main()
