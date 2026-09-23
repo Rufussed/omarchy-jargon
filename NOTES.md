@@ -496,3 +496,33 @@ after guessing had failed twice.
   it exists now that libraries do.
 - Nothing has been offered upstream. The budget readout is still the feature
   teach-voxtype most needs.
+
+---
+
+## Addendum, 2026-09-23: the bar icon is a separate plugin id, on purpose
+
+Omarchy's shell keeps **one shared enabled flag per plugin id**. For a plugin
+that declares `kinds: ["overlay", "bar-widget"]`, that flag is defined by
+whether the id appears *anywhere* in `shell.json` — for a bar-widget, that
+means presence in `bar.layout.*`. Remove the icon from the bar by any means —
+a direct edit, `omarchy plugin disable`, even just dragging it off — and the
+*whole plugin id* goes dark, overlay included. There is no way to keep the
+panel reachable by keybinding while the bar icon is off, as long as both kinds
+share one manifest.
+
+The fix is two plugins:
+
+- `rufussed.jargon` — `kinds: ["overlay"]` only. Never touched by icon on/off.
+  Its own enabled state lives as a top-level entry in `shell.json`'s
+  `plugins[]` array (required for any non-first-party, non-bar plugin to
+  count as enabled — see `PluginRegistry.qml`'s `isEnabled`/`findEntryLocation`).
+- `rufussed.jargon-icon` (`bar-icon/`) — `kinds: ["bar-widget"]` only. Its sole
+  job is a button that runs `omarchy-shell shell toggle rufussed.jargon`.
+  Disabling it only ever removes a `bar.layout` entry; it has no other
+  registration to lose.
+
+Also worth knowing: `omarchy plugin disable` then `enable` back-to-back is a
+real race — each is a separate IPC round-trip that reads, modifies and writes
+`shell.json`, and with no gap the enable's read can land before the disable's
+write. `jargon`'s `set_icon()` sleeps between them and verifies before
+returning.

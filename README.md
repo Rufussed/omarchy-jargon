@@ -3,9 +3,9 @@
 **Teach your dictation the words you actually use.**
 
 An [Omarchy](https://omarchy.org) plugin for [Voxtype](https://voxtype.io),
-the push-to-talk dictation built into Omarchy. Press **Super+F9**, tick the
-vocabulary that matches your work, and technical words come out right the first
-time you say them.
+the push-to-talk dictation built into Omarchy. Press **Super+F9** (or click the
+ear in your bar), tick the vocabulary that matches your work, and technical
+words come out right the first time you say them.
 
 ---
 
@@ -59,15 +59,21 @@ cd omarchy-jargon
 ```
 
 That puts the `jargon` command on your PATH, installs the panel as an Omarchy
-plugin, and binds **Super+F9** to open it. Your `bindings.lua` is backed up
-first, and if Super+F9 is already taken it says so instead of clobbering it.
+plugin, adds an ear icon to your bar, and binds **Super+F9** to open it. Your
+`bindings.lua` is backed up first, and if Super+F9 is already taken it says so
+instead of clobbering it.
 
-Pass `--no-bind` if you manage your own keybindings, then add:
+Both are optional and independent — turn either off from the panel's top
+right, or from the terminal:
 
-```lua
--- ~/.config/hypr/bindings.lua
-o.bind("SUPER + F9", "Dictation vocabulary", "omarchy-shell shell toggle rufussed.jargon")
+```bash
+jargon surface icon off     # remove the bar icon, keep Super+F9
+jargon surface bind off     # remove the keybinding, keep the icon
 ```
+
+At least one has to stay on; turning off the last one is refused, since
+otherwise nothing could open the panel again. Pass `--no-bind` to `install.sh`
+to skip the keybinding at install time.
 
 Because the binding lives in `bindings.lua`, it also shows up in Omarchy's
 keybindings cheatsheet for free.
@@ -76,7 +82,7 @@ A good mnemonic: **F9 dictates, Super+F9 configures what it hears.**
 
 ## Using it
 
-Press **Super+F9**.
+Press **Super+F9**, or click the ear icon in your bar.
 
 | key | does |
 |---|---|
@@ -86,6 +92,10 @@ Press **Super+F9**.
 | `n` | make a new list |
 | `×` | delete a list, or click a word to remove it |
 | `esc` | close |
+
+Top right of the panel has two small toggles — a keyboard and an ear — for
+the keybinding and bar icon. Click either to turn it off; the last one left on
+cannot be, since that would leave no way to reopen the panel.
 
 Changes apply when you close the panel, and Voxtype restarts itself. There is
 no save button.

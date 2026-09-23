@@ -2,11 +2,15 @@
   "schemaVersion": 1,
   "id": "rufussed.jargon",
   "name": "Jargon",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "rufussed",
   "license": "MIT",
   "description": "Dictation vocabulary for Voxtype: enable curated term groups, watch the 224-token budget, and see which terms your dictation actually uses.",
-  "kinds": ["overlay"],
+  "kinds": [
+    "overlay"
+  ],
   "keepLoaded": true,
-  "entryPoints": { "overlay": "Jargon.qml" }
+  "entryPoints": {
+    "overlay": "Jargon.qml"
+  }
 }

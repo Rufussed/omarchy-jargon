@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "rufussed.jargon-icon",
+  "name": "Jargon (bar icon)",
+  "version": "1.0.0",
+  "author": "rufussed",
+  "license": "MIT",
+  "description": "Optional ear icon that opens the Jargon dictation-vocabulary panel.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Jargon",
+    "description": "Dictation vocabulary for Voxtype",
+    "category": "System",
+    "aliases": ["dictation", "vocabulary", "voxtype", "whisper", "words"],
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

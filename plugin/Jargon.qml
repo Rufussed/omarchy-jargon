@@ -44,6 +44,18 @@ Item {
                                   ? root.lists[root.selectedIndex] : null
   readonly property var personal: root.selected ? root.selected.terms : []
   property string inputMode: "term"     // "term" | "newlist"
+  readonly property var savedSurfaces: state && state.surfaces
+                                       ? state.surfaces : ({ bind: true, icon: true })
+  // Applying a surface change edits shell.json or reloads Hyprland, either of
+  // which makes the shell tear this panel down mid-use. So toggle locally and
+  // commit on close, the same as vocabulary edits.
+  property var pendingSurfaces: ({})
+  readonly property var surfaces: ({
+    bind: root.pendingSurfaces.bind !== undefined
+          ? root.pendingSurfaces.bind : root.savedSurfaces.bind,
+    icon: root.pendingSurfaces.icon !== undefined
+          ? root.pendingSurfaces.icon : root.savedSurfaces.icon
+  })
   readonly property bool autoapply: state && state.autoapply !== undefined
                                     ? state.autoapply : true
   readonly property var models: state && state.models ? state.models.list : []
@@ -112,6 +124,28 @@ Item {
     editor.exec([root.bin, "new", n, "--json"])
   }
 
+  function setSurface(which, on) {
+    var next = {}
+    if (root.pendingSurfaces.bind !== undefined) next.bind = root.pendingSurfaces.bind
+    if (root.pendingSurfaces.icon !== undefined) next.icon = root.pendingSurfaces.icon
+    next[which] = on
+    root.pendingSurfaces = next
+  }
+
+  function commitSurfaces() {
+    var jobs = []
+    if (root.pendingSurfaces.bind !== undefined
+        && root.pendingSurfaces.bind !== root.savedSurfaces.bind)
+      jobs.push(["bind", root.pendingSurfaces.bind])
+    if (root.pendingSurfaces.icon !== undefined
+        && root.pendingSurfaces.icon !== root.savedSurfaces.icon)
+      jobs.push(["icon", root.pendingSurfaces.icon])
+    root.pendingSurfaces = ({})
+    for (var i = 0; i < jobs.length; i++)
+      Quickshell.execDetached([root.bin, "surface", jobs[i][0],
+                               jobs[i][1] ? "on" : "off"])
+  }
+
   function removeList(name) {
     if (!name || root.busy) return
     root.busy = true
@@ -153,6 +187,7 @@ Item {
   // dismisses is exactly when a daemon restart costs nothing. Editing stays
   // free of restarts however long you spend in here.
   function applyOnClose() {
+    root.commitSurfaces()
     if (!root.autoapply) return
     if (!root.state || !root.state.dirty) return
     autoApplyProc.exec([root.bin, "apply", "--auto"])
@@ -232,6 +267,22 @@ Item {
       onStreamFinished: { if (text && text.length) { root.busy = false; root.notice = text.trim() } }
     }
     function exec(cmd) { editor.command = cmd; editor.running = true }
+  }
+
+  Process {
+    id: surfaceProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.busy = false
+        var r = {}
+        try { r = JSON.parse(text) } catch (e) { return }
+        // The last remaining way in cannot be switched off; say why.
+        if (r.refused) { root.notice = r.refused; noticeFade.restart() }
+        root.refreshQuiet()
+      }
+    }
+    function exec(cmd) { surfaceProc.command = cmd; surfaceProc.running = true }
   }
 
   Process {
@@ -372,9 +423,66 @@ Item {
               font.pixelSize: root.fontHeading
               font.bold: true
             }
+            // Which ways in are switched on. The last one cannot be turned
+            // off, or the plugin becomes unreachable.
+            Row {
+              id: surfaceToggles
+              anchors.right: parent.right
+              anchors.verticalCenter: title.verticalCenter
+              spacing: Style.space(12)
+
+              Repeater {
+                model: [
+                  { key: "bind", other: "icon", glyph: "\u{F030C}",
+                    onTip: "Super+F9 opens this panel. Click to turn the shortcut off.",
+                    offTip: "Keyboard shortcut is off. Click to bind Super+F9." },
+                  { key: "icon", other: "bind", glyph: "\u{F07C5}",
+                    onTip: "The ear icon is in your bar. Click to remove it.",
+                    offTip: "No bar icon. Click to put the ear in your bar." }
+                ]
+
+                delegate: Text {
+                  id: toggleGlyph
+                  property bool isOn: root.surfaces[modelData.key] === true
+                  // Turning this one off would leave no way to open the panel.
+                  property bool isLast: isOn
+                                        && root.surfaces[modelData.other] !== true
+                  text: modelData.glyph
+                  color: root.foreground
+                  opacity: isOn ? 0.9 : 0.22
+                  font.family: Style.font.menuFamily
+                  font.pixelSize: root.fontHeading
+
+                  MouseArea {
+                    id: toggleHover
+                    anchors.fill: parent
+                    anchors.margins: -Style.space(4)
+                    hoverEnabled: true
+                    cursorShape: toggleGlyph.isLast ? Qt.ForbiddenCursor
+                                                    : Qt.PointingHandCursor
+                    onClicked: {
+                      if (toggleGlyph.isLast) return   // the tooltip already says why
+                      root.setSurface(modelData.key, !toggleGlyph.isOn)
+                    }
+                  }
+
+                  // The shell's own tooltip: themed, overlaid, and delayed the
+                  // same as every other tooltip in Omarchy.
+                  PanelToolTip {
+                    visible: toggleHover.containsMouse
+                    text: toggleGlyph.isLast
+                          ? "At least one opening trigger must be active"
+                          : (toggleGlyph.isOn ? modelData.onTip : modelData.offTip)
+                    fontFamily: Style.font.menuFamily
+                  }
+                }
+              }
+            }
+
             Text {
               id: termCount
-              anchors.right: parent.right
+              anchors.right: surfaceToggles.left
+              anchors.rightMargin: Style.space(16)
               anchors.verticalCenter: title.verticalCenter
               text: root.state ? (root.state.termCount + " terms") : "…"
               color: root.foreground

@@ -343,6 +343,151 @@ def refuse(a, what, n):
             f"{budget()} cap. Turn a list off first, or pass --force.")
 
 
+
+# ---------------------------------------------------------------- surfaces
+#
+# Two ways to open the panel: a Super+F9 keybinding and an ear icon in the bar.
+# Both on by default. Turning both off would leave the plugin installed with no
+# way to reach it, so the last one standing cannot be switched off.
+
+BINDINGS = os.path.expanduser("~/.config/hypr/bindings.lua")
+SHELL_JSON = os.path.expanduser("~/.config/omarchy/shell.json")
+PLUGIN_ID = "rufussed.jargon"        # overlay: never disabled, always available
+ICON_ID = "rufussed.jargon-icon"     # separate id -- see bar-icon/BarWidget.qml
+BIND_BLOCK = """
+-- Jargon: F9 dictates, Super+F9 configures what it hears.
+o.bind("SUPER + F9", "Dictation vocabulary", "omarchy-shell shell toggle rufussed.jargon")
+"""
+
+
+def bind_on():
+    try:
+        return PLUGIN_ID in open(BINDINGS).read()
+    except OSError:
+        return False
+
+
+def load_shell_json():
+    with open(SHELL_JSON) as f:
+        return json.load(f)
+
+
+def icon_section():
+    """Which bar section holds the icon widget, or None."""
+    try:
+        d = load_shell_json()
+    except (OSError, json.JSONDecodeError):
+        return None
+    for section, items in d.get("bar", {}).get("layout", {}).items():
+        for it in items:
+            if isinstance(it, dict) and it.get("id") == ICON_ID:
+                return section
+    return None
+
+
+def icon_on():
+    return icon_section() is not None
+
+
+def surfaces_state():
+    return {"bind": bind_on(), "icon": icon_on()}
+
+
+def set_bind(on):
+    if on:
+        if bind_on():
+            return "keybinding already set"
+        with open(BINDINGS, "a") as f:
+            f.write(BIND_BLOCK)
+        subprocess.run(["hyprctl", "reload"], capture_output=True)
+        return "Super+F9 bound"
+    try:
+        lines = open(BINDINGS).read().splitlines(keepends=True)
+    except OSError:
+        return "no bindings.lua"
+    out, skip_comment = [], False
+    for ln in lines:
+        if PLUGIN_ID in ln and ln.lstrip().startswith("o.bind"):
+            # drop the comment line we wrote directly above it too
+            while out and out[-1].strip() == "":
+                out.pop()
+            if out and out[-1].lstrip().startswith("-- Jargon:"):
+                out.pop()
+            continue
+        out.append(ln)
+    open(BINDINGS, "w").write("".join(out))
+    subprocess.run(["hyprctl", "reload"], capture_output=True)
+    return "keybinding removed"
+
+
+def set_icon(on, section="right"):
+    # The icon is its own plugin id (ICON_ID), never PLUGIN_ID: disabling it
+    # only removes the bar-widget, and can never take the overlay down with
+    # it -- see bar-icon/BarWidget.qml for why they are split.
+    here = icon_section()
+    if on:
+        if here:
+            return f"icon already in the {here} section"
+        subprocess.run(["omarchy", "plugin", "disable", ICON_ID], capture_output=True)
+        # disable and enable are separate IPC round-trips, each reading
+        # shell.json, modifying it and writing it back; back-to-back with no
+        # gap, enable's read can race disable's write and the disable is
+        # silently lost. A short wait avoids it; verifying and retrying once
+        # covers the rest.
+        time.sleep(0.4)
+        p = subprocess.run(["omarchy", "plugin", "enable", ICON_ID, section],
+                           capture_output=True, text=True)
+        if p.returncode != 0:
+            die(f"could not place the icon: {p.stderr.strip() or p.stdout.strip()}")
+        time.sleep(0.4)
+        if not icon_section():
+            subprocess.run(["omarchy", "plugin", "enable", ICON_ID, section],
+                           capture_output=True, text=True)
+            time.sleep(0.4)
+        return f"ear icon added to the {section} of the bar"
+    if not here:
+        return "icon not in the bar"
+    p = subprocess.run(["omarchy", "plugin", "disable", ICON_ID],
+                       capture_output=True, text=True)
+    if p.returncode != 0:
+        die(f"could not remove the icon: {p.stderr.strip() or p.stdout.strip()}")
+    time.sleep(0.3)
+    return "ear icon removed"
+
+
+
+def cmd_surface(a, state):
+    cur = surfaces_state()
+    if not a.which:
+        if getattr(a, "json", False):
+            print(json.dumps(cur))
+        else:
+            print(f"\n  keybinding (Super+F9)  "
+                  f"{GRN + 'on' + OFF if cur['bind'] else DIM + 'off' + OFF}")
+            print(f"  bar icon               "
+                  f"{GRN + 'on' + OFF if cur['icon'] else DIM + 'off' + OFF}"
+                  + (f"  {DIM}({icon_section()}){OFF}" if cur["icon"] else ""))
+            print(f"\n{DIM}jargon surface icon off  ·  jargon surface bind on{OFF}\n")
+        return
+
+    want = a.value == "on"
+    other = "icon" if a.which == "bind" else "bind"
+    if not want and not cur[other]:
+        msg = (f"that is the only way left to open the panel; turn the "
+               f"{'bar icon' if other == 'icon' else 'keybinding'} on first")
+        if getattr(a, "json", False):
+            print(json.dumps({"refused": msg, **cur}))
+        else:
+            die(msg)
+        return
+
+    msg = set_bind(want) if a.which == "bind" else set_icon(want)
+    if getattr(a, "json", False):
+        print(json.dumps({"ok": msg, **surfaces_state()}))
+    else:
+        print(f" {msg}")
+
+
 def cmd_lists(a, state):
     counts = state.get("usage", {})
     print()
@@ -651,6 +796,7 @@ def state_json(state):
         "termCount": len(terms),
         "focus": state["focus"],
         "autoapply": state.get("autoapply", True),
+        "surfaces": surfaces_state(),
         "lists": [
             {"name": n,
              "description": state["lists"][n]["description"],
@@ -990,6 +1136,10 @@ def main():
     us.add_argument("--rescan", action="store_true")
     js = sub.add_parser("json", help="machine-readable state (for the panel)")
     js.add_argument("--no-scan", action="store_true")
+    sf = sub.add_parser("surface", help="keybinding and bar icon")
+    sf.add_argument("which", nargs="?", choices=["bind", "icon"])
+    sf.add_argument("value", nargs="?", choices=["on", "off"])
+    sf.add_argument("--json", action="store_true")
     sub.add_parser("models", help="list whisper models")
     md = sub.add_parser("model", help="download + activate a model")
     md.add_argument("name")
@@ -1009,6 +1159,7 @@ def main():
           "describe": cmd_describe, "add": cmd_add, "remove": cmd_remove,
           "prompt": cmd_prompt, "apply": cmd_apply, "reset": cmd_reset,
           "usage": cmd_usage, "json": cmd_json, "auto": cmd_auto,
+          "surface": cmd_surface,
           "models": cmd_models, "model": cmd_model, "download": cmd_download,
           "rm-model": cmd_rmmodel}.get(a.cmd or "status")
     fn(a, state)

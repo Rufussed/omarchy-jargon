@@ -7,13 +7,22 @@
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 plugin_dir="$HOME/.config/omarchy/plugins/rufussed.jargon"
+icon_dir="$HOME/.config/omarchy/plugins/rufussed.jargon-icon"
 
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$src/jargon" "$HOME/.local/bin/jargon"
 
 [ -L "$plugin_dir" ] && rm "$plugin_dir"
 mkdir -p "$plugin_dir"
-cp -f "$src/plugin/manifest.json" "$src/plugin/Jargon.qml" "$plugin_dir/"
+cp -f "$src"/plugin/* "$plugin_dir/"
+
+# The bar icon is a separate plugin id, deliberately: omarchy-shell shares one
+# enabled flag per id, and for a bar-widget kind that flag means "present in
+# the bar layout." Bundled with the overlay, turning the icon off would take
+# the whole panel down with it -- including the keybinding.
+[ -L "$icon_dir" ] && rm "$icon_dir"
+mkdir -p "$icon_dir"
+cp -f "$src"/bar-icon/* "$icon_dir/"
 
 # A panel with no way to open it is not installed, so bind by default.
 # --no-bind skips this for anyone who manages their own keybindings.
@@ -38,5 +47,6 @@ BIND
 fi
 
 omarchy plugin enable rufussed.jargon >/dev/null 2>&1 || true
+omarchy plugin enable rufussed.jargon-icon right >/dev/null 2>&1 || true
 qs -p /usr/share/omarchy/shell ipc call shell rescanPlugins >/dev/null 2>&1 || true
 echo "installed — Super+F9 opens the panel, 'jargon' runs the CLI"
