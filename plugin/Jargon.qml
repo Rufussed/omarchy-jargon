@@ -32,7 +32,6 @@ Item {
   // they crowd. Step everything down one notch.
   readonly property int fontBody: Math.max(9, Style.font.small - 2)
   readonly property int fontSmall: Math.max(8, Style.font.small - 4)
-  readonly property int fontTiny: Math.max(7, root.fontSmall - 1)
   readonly property int fontHeading: Math.max(11, Style.font.small + 1)
   property int cardWidth: Math.round(panel.width * 0.8)
   property int cardHeight: Math.round(panel.height * 0.9)
@@ -899,6 +898,10 @@ Item {
               Repeater {
                 model: root.models
                 delegate: Rectangle {
+                  id: modelChip
+                  // name, size, then a single trailing icon: a download arrow
+                  // for a model not yet on disk, a remove x for one that is
+                  // installed and not active, nothing for the active model.
                   height: chipRow.height + Style.space(8)
                   width: chipRow.width + Style.space(18)
                   radius: 0
@@ -909,6 +912,9 @@ Item {
                     : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
                               modelData.installed ? 0.22 : 0.1)
 
+                  readonly property bool showRemove: modelData.installed && !modelData.active
+                  readonly property bool showDownload: !modelData.installed
+
                   Row {
                     id: chipRow
                     anchors.centerIn: parent
@@ -917,41 +923,57 @@ Item {
                     Text {
                       id: modelLabel
                       anchors.verticalCenter: parent.verticalCenter
-                      text: modelData.name + (modelData.installed ? "  " : "  ↓ ") + modelData.size
+                      text: modelData.name + "  " + modelData.size
                       color: modelData.active ? root.selectedText : root.foreground
                       opacity: modelData.active ? 1 : (modelData.installed ? 0.6 : 0.35)
                       font.family: Style.font.menuFamily
-                      font.pixelSize: root.fontTiny
+                      font.pixelSize: root.fontSmall
                       font.bold: modelData.active
 
                       MouseArea {
+                        id: labelMouse
                         anchors.fill: parent
+                        hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.useModel(modelData.name, modelData.installed, modelData.size)
                       }
+
+                      PanelToolTip {
+                        visible: labelMouse.containsMouse
+                        text: modelData.active ? "Deactivate" : "Activate"
+                        fontFamily: Style.font.menuFamily
+                      }
                     }
 
-                    // Inside the chip and always visible: anchored outside it,
-                    // reaching for the x left the chip and hid it.
-                    // Never offered for the active model -- deleting it would
-                    // leave voxtype with nothing to load.
+                    // Trailing icon: download when the model is not yet on
+                    // disk, remove when it is (and is not the one in use).
                     Text {
-                      id: rmText
+                      id: endIcon
                       anchors.verticalCenter: parent.verticalCenter
-                      visible: modelData.installed && !modelData.active
-                      text: "\u00d7"
-                      color: rmMouse.containsMouse ? "#e05561" : root.foreground
-                      opacity: rmMouse.containsMouse ? 1 : 0.4
+                      visible: modelChip.showRemove || modelChip.showDownload
+                      text: modelChip.showDownload ? "\u2193" : "\u00d7"
+                      color: endMouse.containsMouse
+                             ? (modelChip.showDownload ? root.foreground : "#e05561")
+                             : root.foreground
+                      opacity: endMouse.containsMouse ? 1 : 0.4
                       font.family: Style.font.menuFamily
                       font.pixelSize: root.fontBody
 
                       MouseArea {
-                        id: rmMouse
+                        id: endMouse
                         anchors.fill: parent
                         anchors.margins: -Style.space(4)
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: root.removeModel(modelData.name)
+                        onClicked: modelChip.showDownload
+                                   ? root.useModel(modelData.name, false, modelData.size)
+                                   : root.removeModel(modelData.name)
+                      }
+
+                      PanelToolTip {
+                        visible: endMouse.containsMouse
+                        text: modelChip.showDownload ? "Download" : "Remove"
+                        fontFamily: Style.font.menuFamily
                       }
                     }
                   }
