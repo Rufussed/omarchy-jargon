@@ -46,7 +46,9 @@ BIND
   fi
 fi
 
-omarchy plugin enable rufussed.jargon >/dev/null 2>&1 || true
-omarchy plugin enable rufussed.jargon-icon right >/dev/null 2>&1 || true
-qs -p /usr/share/omarchy/shell ipc call shell rescanPlugins >/dev/null 2>&1 || true
+# Discover newly copied plugins before enabling them. Report failures instead
+# of claiming success with a disabled panel and icon.
+omarchy-shell shell rescanPlugins
+omarchy plugin enable rufussed.jargon
+omarchy plugin enable rufussed.jargon-icon right
 echo "installed — Super+F9 opens the panel, 'jargon' runs the CLI"
