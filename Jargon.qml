@@ -968,7 +968,7 @@ Item {
                           ? "name for the new list, enter to create"
                           : (input.activeFocus
                              ? ("add a word to " + (root.selected ? root.selected.name : "…"))
-                             : "press  a  to add a word  ·  n  for a new list")
+                             : "a  add a word  ·  n  new list")
                     color: root.foreground
                     opacity: 0.35
                     font: input.font
