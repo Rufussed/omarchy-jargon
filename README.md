@@ -1,5 +1,7 @@
 # Jargon
 
+![Jargon: vocabulary lists, token budget, model and CPU/GPU controls](jargon.png)
+
 ### "I've got all the best words."
 
 If Voxtype keeps mishearing your voice, take control. Give it the vocabulary
