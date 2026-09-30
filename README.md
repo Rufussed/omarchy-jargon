@@ -1,11 +1,16 @@
 # Jargon
 
-**Teach your dictation the words you actually use.**
+### "I've got all the best words."
+
+If Voxtype keeps mishearing your voice, take control. Give it the vocabulary
+you actually use — 3D creation, coding, knitting, whatever your words are.
+Change the size of the Whisper model that does the listening. Choose whether it
+runs on your CPU or your GPU, depending on what matters more, speed or battery.
 
 An [Omarchy](https://omarchy.org) plugin for [Voxtype](https://voxtype.io),
-the push-to-talk dictation built into Omarchy. Press **Super+F9** (or click the
-ear in your bar), tick the vocabulary that matches your work, and technical
-words come out right the first time you say them.
+the push-to-talk dictation built into Omarchy. Click the
+ear in your bar (or press **Super+F9**), tick the vocabulary that matches your
+work, and your words come out right the first time you say them.
 
 ---
 
@@ -29,13 +34,15 @@ Jargon fills that setting in, and stops you overflowing it.
 
 ## What it does
 
-- **A vocabulary, ready to use.** Seven curated lists — 3D, web, backend, git,
+- **A vocabulary, ready to use.** Seven premade lists — 3D, web, backend, git,
   Linux, AI, everyday dev — written and grouped so you enable two or three and
   you are done.
+- **Make them yours.** The premade lists are a starting point, not a
+  catalogue. Edit them, rename them, or remove them entirely and add lists of
+  your own in their place — knitting, your client's product names,
+  `char-goatman`, `Mixamo`.
 - **Your own words.** Add the names, brands and project words nothing else will
-  get right. `char-goatman`, `Mixamo`, your client's name.
-- **Everything is editable.** The shipped lists are a starting point, not a
-  catalogue. Rename them, edit them, delete them, make your own.
+  get right.
 - **A budget you can see.** The prompt has a hard limit and Whisper silently
   throws away the overflow. Jargon counts it exactly and refuses to let you go
   over.
@@ -43,59 +50,87 @@ Jargon fills that setting in, and stops you overflowing it.
   in your dictation, so you know what earns its place and what to cut.
 - **Manages your models too.** Download, switch and delete Whisper models from
   the same panel, with progress and a cancel button.
+- **CPU or GPU.** See which one Voxtype is running on and switch with one
+  click. GPU is much faster on bigger models; CPU saves battery on a laptop.
+  Switching restarts Voxtype so it takes effect immediately.
 
 ## Requirements
 
 - Omarchy with `omarchy-shell` (the Quickshell-based bar)
 - Voxtype installed and running (`voxtype --version`)
-- Python 3
+- Python 3 (the panel calls a small bundled script, `jargon`)
+- Optional, for the CPU/GPU switch: a Voxtype build with GPU support (the
+  Vulkan build) and a Vulkan driver
 
 ## Install
 
 ```bash
-git clone https://github.com/Rufussed/omarchy-jargon.git
-cd omarchy-jargon
-./install.sh
+omarchy plugin add https://github.com/Rufussed/omarchy-jargon.git --enable
 ```
 
-That puts the `jargon` command on your PATH, installs the panel as an Omarchy
-plugin, adds an ear icon to your bar, and binds **Super+F9** to open it. Your
-`bindings.lua` is backed up first, and if Super+F9 is already taken it says so
-instead of clobbering it.
+Plugins land disabled unless you pass `--enable`, so you can read the code
+first. Once enabled, an **ear icon** appears in your bar; click it to open the
+panel. It is one plugin: the ear and the panel come and go together.
 
-Both are optional and independent — turn either off from the panel's top
-right, or from the terminal:
+**Super+F9** is optional. Turn it on from the keyboard icon at the top right
+of the panel, or add the line yourself to `~/.config/hypr/bindings.lua`:
 
-```bash
-jargon surface icon off     # remove the bar icon, keep Super+F9
-jargon surface bind off     # remove the keybinding, keep the icon
+```lua
+o.bind("SUPER + F9", "Voxtype vocabulary context", "omarchy-shell shell toggle rufussed.jargon")
 ```
 
-At least one has to stay on; turning off the last one is refused, since
-otherwise nothing could open the panel again. Pass `--no-bind` to `install.sh`
-to skip the keybinding at install time.
-
-Because the binding lives in `bindings.lua`, it also shows up in Omarchy's
-keybindings cheatsheet for free.
+Prefer a script? Clone the repo and run `./install.sh`. It does the same
+thing, adds the `jargon` command to your PATH, and binds Super+F9 (backing up
+`bindings.lua` first, and saying so instead of clobbering an existing
+binding). Pass `--no-bind` to skip the keybinding.
 
 A good mnemonic: **F9 dictates, Super+F9 configures what it hears.**
 
+## Removing it
+
+```bash
+omarchy plugin remove rufussed.jargon
+```
+
+That removes the plugin and the ear. If you added the keybinding, delete the
+`Jargon` block from `bindings.lua` (or turn the keyboard icon off in the panel
+first). Your lists live in `~/.config/jargon/`; delete that folder to remove
+them too. Voxtype's own `whisper.initial_prompt` keeps whatever Jargon last
+wrote; `jargon reset` clears it.
+
+## What it touches
+
+Jargon runs unsandboxed like every Omarchy plugin, so, plainly:
+
+- Writes Voxtype's `whisper.initial_prompt` (via `voxtype config set`) and
+  restarts the `voxtype` user service so it takes effect.
+- Downloads and deletes Whisper model files in
+  `~/.local/share/voxtype/models` (via `voxtype setup --download`).
+- Reads the Voxtype journal to count which of your words get used.
+- Stores your lists and settings in `~/.config/jargon/`.
+- Optionally edits `~/.config/hypr/bindings.lua` (the Super+F9 binding).
+- The **CPU/GPU switch** runs `pkexec voxtype setup gpu --enable|--disable`,
+  which asks for your password through the normal polkit prompt and changes
+  which Voxtype binary `/usr/bin/voxtype` points at.
+- No network access other than the model downloads Voxtype itself performs.
+
 ## Using it
 
-Press **Super+F9**, or click the ear icon in your bar.
+Click the ear icon in your bar, or press **Super+F9** if you bound it.
 
 | key | does |
 |---|---|
-| `↑` `↓` | move between lists |
-| `space` | turn a list on or off |
+| `↑` `↓` `←` `→` | move around: lists, words, CPU/GPU, models (`tab` also hops) |
+| `space` / `enter` | turn a list on or off; remove the highlighted word; switch CPU/GPU; pick a model |
 | `a` | add a word to the selected list |
 | `n` | make a new list |
+| `del` | remove the highlighted word or model |
+| `u` / `ctrl+z` | undo the last removed word |
 | `×` | delete a list, or click a word to remove it |
 | `esc` | close |
 
-Top right of the panel has two small toggles — a keyboard and an ear — for
-the keybinding and bar icon. Click either to turn it off; the last one left on
-cannot be, since that would leave no way to reopen the panel.
+Top right of the panel has a small keyboard toggle for the Super+F9
+keybinding.
 
 Changes apply when you close the panel, and Voxtype restarts itself. There is
 no save button.
@@ -124,7 +159,13 @@ jargon model small.en       # download if needed, then switch
 
 ## How it works
 
-There is no dictionary and no spell-check. Whisper writes text one piece at a
+There is no dictionary and no spell-check. Jargon uses Whisper's **initial
+prompt**: a short piece of text the model reads before it transcribes, which
+Voxtype exposes as `whisper.initial_prompt`. Jargon builds that prompt from the
+lists you have switched on, stays inside its limit, and restarts Voxtype so it
+is picked up. The limit is 224 tokens, and it is Whisper's, not Voxtype's.
+
+Whisper writes text one piece at a
 time, weighing what it heard against the words already in front of it. Your
 vocabulary is placed there as context, so when the audio is ambiguous between
 "GOB" and "GLB", the surrounding technical words tip the balance.

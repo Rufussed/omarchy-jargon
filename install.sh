@@ -7,22 +7,23 @@
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 plugin_dir="$HOME/.config/omarchy/plugins/rufussed.jargon"
-icon_dir="$HOME/.config/omarchy/plugins/rufussed.jargon-icon"
+old_icon_dir="$HOME/.config/omarchy/plugins/rufussed.jargon-icon"
 
 mkdir -p "$HOME/.local/bin"
-ln -sfn "$src/jargon" "$HOME/.local/bin/jargon"
+ln -sfn "$plugin_dir/jargon" "$HOME/.local/bin/jargon"
+
+# One plugin id: the panel and the ear icon ship together. (Earlier versions
+# installed the icon as a second id, rufussed.jargon-icon; clear that out.)
+if [ -d "$old_icon_dir" ]; then
+  omarchy plugin disable rufussed.jargon-icon >/dev/null 2>&1 || true
+  rm -rf "$old_icon_dir"
+fi
 
 [ -L "$plugin_dir" ] && rm "$plugin_dir"
 mkdir -p "$plugin_dir"
-cp -f "$src"/plugin/* "$plugin_dir/"
-
-# The bar icon is a separate plugin id, deliberately: omarchy-shell shares one
-# enabled flag per id, and for a bar-widget kind that flag means "present in
-# the bar layout." Bundled with the overlay, turning the icon off would take
-# the whole panel down with it -- including the keybinding.
-[ -L "$icon_dir" ] && rm "$icon_dir"
-mkdir -p "$icon_dir"
-cp -f "$src"/bar-icon/* "$icon_dir/"
+cp -f "$src"/manifest.json "$src"/Jargon.qml "$src"/BarWidget.qml "$src"/jargon "$plugin_dir/"
+rm -rf "$plugin_dir/library"
+cp -r "$src"/library "$plugin_dir/library"
 
 # A panel with no way to open it is not installed, so bind by default.
 # --no-bind skips this for anyone who manages their own keybindings.
@@ -49,6 +50,9 @@ fi
 # Discover newly copied plugins before enabling them. Report failures instead
 # of claiming success with a disabled panel and icon.
 omarchy-shell shell rescanPlugins
-omarchy plugin enable rufussed.jargon
-omarchy plugin enable rufussed.jargon-icon right
+# Enabling puts the ear in the bar. Re-enable from scratch so an install over
+# an older layout ends with exactly one entry, in the right place.
+omarchy plugin disable rufussed.jargon >/dev/null 2>&1 || true
+sleep 1
+omarchy plugin enable rufussed.jargon right
 echo "installed — Super+F9 opens the panel, 'jargon' runs the CLI"

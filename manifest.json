@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "rufussed.jargon",
+  "name": "Jargon",
+  "version": "0.3.0",
+  "author": "rufussed",
+  "license": "MIT",
+  "description": "I've got all the best words. If Voxtype keeps mishearing you, give it the vocabulary you use (3D, coding, knitting), pick the Whisper model size, and run it on CPU or GPU.",
+  "kinds": ["overlay", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Jargon.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Jargon",
+    "description": "Voxtype vocabulary context",
+    "category": "System",
+    "aliases": ["dictation", "vocabulary", "voxtype", "whisper", "words"],
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

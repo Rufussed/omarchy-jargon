@@ -386,7 +386,7 @@ warns, and term usage is logged.
 ```
 library/groups.json   7 curated groups
 jargon                CLI; owns initial_prompt only, never text.replacements
-plugin/               rufussed.jargon — overlay, keepLoaded, no bar widget
+(repo root)           rufussed.jargon — overlay + bar-widget, keepLoaded
 install.sh            links the CLI, copies the plugin, enables, rescans
 ```
 
@@ -526,3 +526,30 @@ real race — each is a separate IPC round-trip that reads, modifies and writes
 `shell.json`, and with no gap the enable's read can land before the disable's
 write. `jargon`'s `set_icon()` sleeps between them and verifies before
 returning.
+
+
+---
+
+## Addendum, 2026-09-30: back to one plugin id, for the marketplace
+
+The marketplace (plugins.omarchy.org) wants a valid `manifest.json` at the
+repository root and installs with `omarchy plugin add <repo>`, which clones the
+repo into `~/.config/omarchy/plugins/<id>/` and runs no install script. Two ids
+in one repo cannot do that, and a panel that needs `~/.local/bin/jargon` cannot
+work from a bare clone. So the split described in the 2026-09-23 addendum is
+undone:
+
+- One id, `rufussed.jargon`, `kinds: ["overlay", "bar-widget"]`, manifest, QML
+  and the `jargon` script all at the repo root. The panel finds the CLI from
+  its own manifest's `__sourceDir`, so nothing needs to be on PATH.
+- The cost is the one that addendum names: the enabled flag is per id, so
+  taking the ear out of the bar disables the whole plugin, keybinding included.
+  That is accepted -- the ear *is* the plugin being on. The panel's second
+  toggle (bar icon) is gone; only the Super+F9 binding remains togglable, and
+  `jargon surface` only handles `bind`.
+- `install.sh` migrates an older install: it removes `rufussed.jargon-icon`
+  and re-enables the single id into the bar's right section.
+
+Also since then: CPU/GPU switch (`jargon backend cpu|gpu`, via `pkexec voxtype
+setup gpu`), arrow-key navigation, undo for removed words, and the panel's
+`state` property renamed `jstate` because it shadowed `Item.state` (qmllint).

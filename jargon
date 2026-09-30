@@ -346,14 +346,12 @@ def refuse(a, what, n):
 
 # ---------------------------------------------------------------- surfaces
 #
-# Two ways to open the panel: a Super+F9 keybinding and an ear icon in the bar.
-# Both on by default. Turning both off would leave the plugin installed with no
-# way to reach it, so the last one standing cannot be switched off.
+# The panel opens from the ear icon in the bar (the plugin's own bar-widget,
+# present whenever the plugin is enabled) and, optionally, a Super+F9 binding.
+# Only the binding is ours to toggle; the icon is the plugin being on.
 
 BINDINGS = os.path.expanduser("~/.config/hypr/bindings.lua")
-SHELL_JSON = os.path.expanduser("~/.config/omarchy/shell.json")
-PLUGIN_ID = "rufussed.jargon"        # overlay: never disabled, always available
-ICON_ID = "rufussed.jargon-icon"     # separate id -- see bar-icon/BarWidget.qml
+PLUGIN_ID = "rufussed.jargon"
 BIND_BLOCK = """
 -- Jargon: F9 dictates, Super+F9 configures what it hears.
 o.bind("SUPER + F9", "Dictation vocabulary", "omarchy-shell shell toggle rufussed.jargon")
@@ -367,30 +365,8 @@ def bind_on():
         return False
 
 
-def load_shell_json():
-    with open(SHELL_JSON) as f:
-        return json.load(f)
-
-
-def icon_section():
-    """Which bar section holds the icon widget, or None."""
-    try:
-        d = load_shell_json()
-    except (OSError, json.JSONDecodeError):
-        return None
-    for section, items in d.get("bar", {}).get("layout", {}).items():
-        for it in items:
-            if isinstance(it, dict) and it.get("id") == ICON_ID:
-                return section
-    return None
-
-
-def icon_on():
-    return icon_section() is not None
-
-
 def surfaces_state():
-    return {"bind": bind_on(), "icon": icon_on()}
+    return {"bind": bind_on()}
 
 
 def set_bind(on):
@@ -420,49 +396,6 @@ def set_bind(on):
     return "keybinding removed"
 
 
-def set_icon(on, section="right"):
-    # The icon is its own plugin id (ICON_ID), never PLUGIN_ID: disabling it
-    # only removes the bar-widget, and can never take the overlay down with
-    # it -- see bar-icon/BarWidget.qml for why they are split.
-    here = icon_section()
-    # `omarchy plugin enable/disable` are themselves slow -- each is a full
-    # catalog scan plus a shell IPC round trip, on the order of a second,
-    # nothing to do with anything jargon adds. That's already plenty of
-    # settling time between the two calls; the flat sleeps this used to add
-    # on top were pure waste, stacking to 1.5-2s of visible lag on a single
-    # click. Poll briefly only to confirm, rather than always paying a fixed
-    # worst-case wait.
-    def wait_until(pred, tries=8, interval=0.1):
-        for _ in range(tries):
-            if pred():
-                return True
-            time.sleep(interval)
-        return pred()
-
-    if on:
-        if here:
-            return f"icon already in the {here} section"
-        subprocess.run(["omarchy", "plugin", "disable", ICON_ID], capture_output=True)
-        p = subprocess.run(["omarchy", "plugin", "enable", ICON_ID, section],
-                           capture_output=True, text=True)
-        if p.returncode != 0:
-            die(f"could not place the icon: {p.stderr.strip() or p.stdout.strip()}")
-        if not wait_until(icon_section):
-            subprocess.run(["omarchy", "plugin", "enable", ICON_ID, section],
-                           capture_output=True, text=True)
-            wait_until(icon_section)
-        return f"ear icon added to the {section} of the bar"
-    if not here:
-        return "icon not in the bar"
-    p = subprocess.run(["omarchy", "plugin", "disable", ICON_ID],
-                       capture_output=True, text=True)
-    if p.returncode != 0:
-        die(f"could not remove the icon: {p.stderr.strip() or p.stdout.strip()}")
-    wait_until(lambda: not icon_section())
-    return "ear icon removed"
-
-
-
 def cmd_surface(a, state):
     cur = surfaces_state()
     if not a.which:
@@ -471,24 +404,10 @@ def cmd_surface(a, state):
         else:
             print(f"\n  keybinding (Super+F9)  "
                   f"{GRN + 'on' + OFF if cur['bind'] else DIM + 'off' + OFF}")
-            print(f"  bar icon               "
-                  f"{GRN + 'on' + OFF if cur['icon'] else DIM + 'off' + OFF}"
-                  + (f"  {DIM}({icon_section()}){OFF}" if cur["icon"] else ""))
-            print(f"\n{DIM}jargon surface icon off  ·  jargon surface bind on{OFF}\n")
+            print(f"\n{DIM}jargon surface bind on|off{OFF}\n")
         return
 
-    want = a.value == "on"
-    other = "icon" if a.which == "bind" else "bind"
-    if not want and not cur[other]:
-        msg = (f"that is the only way left to open the panel; turn the "
-               f"{'bar icon' if other == 'icon' else 'keybinding'} on first")
-        if getattr(a, "json", False):
-            print(json.dumps({"refused": msg, **cur}))
-        else:
-            die(msg)
-        return
-
-    msg = set_bind(want) if a.which == "bind" else set_icon(want)
+    msg = set_bind(a.value == "on")
     if getattr(a, "json", False):
         print(json.dumps({"ok": msg, **surfaces_state()}))
     else:
@@ -1014,11 +933,43 @@ def gpu_state():
     return "unknown"
 
 
+def on_gpu(accel):
+    return bool(accel) and not accel.startswith("cpu") and accel != "unknown"
+
+
+def gpu_available():
+    return os.path.exists("/usr/lib/voxtype/voxtype-vulkan")
+
+
+def cmd_backend(a, state):
+    """Switch voxtype between its CPU and Vulkan builds, then restart it.
+
+    The switch repoints /usr/bin/voxtype, so it needs root; pkexec raises the
+    same polkit prompt voxtype's own configure uses.
+    """
+    if a.to == "gpu" and not gpu_available():
+        die("no GPU build of voxtype is installed")
+    flag = "--enable" if a.to == "gpu" else "--disable"
+    p = subprocess.run(["pkexec", "voxtype", "setup", "gpu", flag],
+                       capture_output=True, text=True)
+    if p.returncode:
+        die(f"switch failed: {p.stderr.strip() or p.stdout.strip() or 'cancelled'}")
+    subprocess.run(["systemctl", "--user", "restart", "voxtype"],
+                   capture_output=True, text=True)
+    time.sleep(1.5)                      # let the daemon load the model
+    accel = gpu_state()
+    print(json.dumps({"accel": accel, "gpu": on_gpu(accel)}) if a.json
+          else f" {GRN}running on{OFF} {BOLD}{accel}{OFF}")
+
+
 def models_json():
     have = installed_models()
     current = voxtype("config", "get", "whisper.model", check=False)
+    accel = gpu_state()
     return {
-        "accel": gpu_state(),
+        "accel": accel,
+        "gpu": on_gpu(accel),
+        "gpuAvailable": gpu_available(),
         "current": current,
         "download": download_state(),
         "list": [{"name": n,
@@ -1113,6 +1064,7 @@ def main():
             models:
               jargon models                 what is installed, what is running
               jargon model large-v3-turbo   download if needed, then activate
+              jargon backend gpu            run on the GPU (asks for your password)
             """))
     sub = p.add_subparsers(dest="cmd")
 
@@ -1161,8 +1113,8 @@ def main():
     us.add_argument("--rescan", action="store_true")
     js = sub.add_parser("json", help="machine-readable state (for the panel)")
     js.add_argument("--no-scan", action="store_true")
-    sf = sub.add_parser("surface", help="keybinding and bar icon")
-    sf.add_argument("which", nargs="?", choices=["bind", "icon"])
+    sf = sub.add_parser("surface", help="the Super+F9 keybinding")
+    sf.add_argument("which", nargs="?", choices=["bind"])
     sf.add_argument("value", nargs="?", choices=["on", "off"])
     sf.add_argument("--json", action="store_true")
     sub.add_parser("models", help="list whisper models")
@@ -1170,6 +1122,8 @@ def main():
     md.add_argument("name")
     rmm = sub.add_parser("rm-model", help="delete a downloaded model file")
     rmm.add_argument("name"); rmm.add_argument("--json", action="store_true")
+    be = sub.add_parser("backend", help="run voxtype on cpu or gpu (restarts it)")
+    be.add_argument("to", choices=["cpu", "gpu"]); be.add_argument("--json", action="store_true")
     dl = sub.add_parser("download", help="start/inspect/cancel a model download")
     dl.add_argument("name", nargs="?")
     dl.add_argument("--status", action="store_true")
@@ -1186,7 +1140,7 @@ def main():
           "usage": cmd_usage, "json": cmd_json, "auto": cmd_auto,
           "surface": cmd_surface,
           "models": cmd_models, "model": cmd_model, "download": cmd_download,
-          "rm-model": cmd_rmmodel}.get(a.cmd or "status")
+          "rm-model": cmd_rmmodel, "backend": cmd_backend}.get(a.cmd or "status")
     fn(a, state)
 
 

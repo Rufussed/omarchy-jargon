@@ -10,11 +10,26 @@ Item {
 
   property var shell: null
   property var manifest: null
-  property string bin: Quickshell.env("HOME") + "/.local/bin/jargon"
+  // The CLI ships beside this file; that is the copy the shell installed, so
+  // the plugin works from a plain `omarchy plugin add` with nothing on PATH.
+  property string bin: (root.manifest && root.manifest.__sourceDir
+                        ? root.manifest.__sourceDir
+                        : Quickshell.env("HOME") + "/.config/omarchy/plugins/rufussed.jargon")
+                       + "/jargon"
 
   property bool opened: false
-  property var state: null
+  property var jstate: null
   property int selectedIndex: 0
+  // Keyboard focus zone: "lists" | "terms" | "models". Arrows move within a
+  // zone; left/right (or tab) hop between them.
+  property string zone: "lists"
+  property int termIndex: 0
+  property int modelIndex: 0
+  onSelectedIndexChanged: root.termIndex = 0
+  onTermIndexChanged: if (typeof termList !== "undefined")
+                        termList.positionViewAtIndex(root.termIndex, ListView.Contain)
+  onPersonalChanged: root.termIndex = Math.max(0, Math.min(root.termIndex,
+                                                          root.personal.length - 1))
   property bool busy: false
   property string notice: ""
 
@@ -30,13 +45,17 @@ Item {
   property int contentMargin: Style.spacing.panelPadding
   // The shell's body/small sizes are tuned for compact popups; at 80%x90%
   // they crowd. Step everything down one notch.
-  readonly property int fontBody: Math.max(9, Style.font.small - 2)
-  readonly property int fontSmall: Math.max(8, Style.font.small - 4)
-  readonly property int fontHeading: Math.max(11, Style.font.small + 1)
+  readonly property int fontBody: 11
+  readonly property int fontSmall: 10
+  readonly property int fontHeading: 13
+  // Status colours come from the active theme rather than fixed hexes.
+  readonly property color okColor: Color.accent
+  readonly property color badColor: Color.urgent
+  readonly property color warnColor: Qt.tint(Color.accent, Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.5))
   property int cardWidth: Math.round(panel.width * 0.8)
   property int cardHeight: Math.round(panel.height * 0.9)
 
-  readonly property var lists: state ? state.lists : []
+  readonly property var lists: jstate ? jstate.lists : []
   // The selected row is the edit target: adds, removals and the right-hand
   // column all follow it. Selection is local, so hovering never writes state.
   readonly property var selected: (root.lists && root.selectedIndex >= 0
@@ -44,30 +63,34 @@ Item {
                                   ? root.lists[root.selectedIndex] : null
   readonly property var personal: root.selected ? root.selected.terms : []
   property string inputMode: "term"     // "term" | "newlist"
-  readonly property var savedSurfaces: state && state.surfaces
-                                       ? state.surfaces : ({ bind: true, icon: true })
+  readonly property var savedSurfaces: jstate && jstate.surfaces
+                                       ? jstate.surfaces : ({ bind: true })
   // Applying a surface change edits shell.json or reloads Hyprland, either of
   // which makes the shell tear this panel down mid-use. So toggle locally and
   // commit on close, the same as vocabulary edits.
   property var pendingSurfaces: ({})
   readonly property var surfaces: ({
     bind: root.pendingSurfaces.bind !== undefined
-          ? root.pendingSurfaces.bind : root.savedSurfaces.bind,
-    icon: root.pendingSurfaces.icon !== undefined
-          ? root.pendingSurfaces.icon : root.savedSurfaces.icon
+          ? root.pendingSurfaces.bind : root.savedSurfaces.bind
   })
-  readonly property bool autoapply: state && state.autoapply !== undefined
-                                    ? state.autoapply : true
-  readonly property var models: state && state.models ? state.models.list : []
-  readonly property string accel: state && state.models ? state.models.accel : ""
+  readonly property bool autoapply: jstate && jstate.autoapply !== undefined
+                                    ? jstate.autoapply : true
+  readonly property var models: jstate && jstate.models ? jstate.models.list : []
+  readonly property string accel: jstate && jstate.models ? jstate.models.accel : ""
+  readonly property bool onGpu: jstate && jstate.models ? !!jstate.models.gpu : false
+  readonly property bool gpuAvailable: jstate && jstate.models ? !!jstate.models.gpuAvailable : false
   property var dl: ({ active: false })
-  readonly property int tokenCount: state ? state.tokens : 0
-  readonly property int budget: state ? state.budget : 224
+  readonly property int tokenCount: jstate ? jstate.tokens : 0
+  readonly property int budget: jstate ? jstate.budget : 224
 
   function open(payloadJson) {
     root.opened = true
     root.notice = ""
     root.selectedIndex = 0
+    root.zone = "lists"
+    root.undoStack = []
+    root.termIndex = 0
+    root.modelIndex = 0
     root.refresh()
     Qt.callLater(function () { keyCatcher.forceActiveFocus() })
   }
@@ -112,7 +135,7 @@ Item {
     var lists = root.lists.map(function (l) {
       return l.name === name ? Object.assign({}, l, { enabled: !l.enabled }) : l
     })
-    root.state = Object.assign({}, root.state, { lists: lists })
+    root.jstate = Object.assign({}, root.jstate, { lists: lists })
     editor.exec([root.bin, "toggle", name, "--json"])
   }
 
@@ -123,9 +146,76 @@ Item {
     editor.exec([root.bin, "add", t, "--to", root.selected.name, "--json"])
   }
 
+  readonly property var zones: ["lists", "terms", "backend", "models"]
+
+  function moveZone(step) {
+    var i = root.zones.indexOf(root.zone)
+    var n = root.zones.length
+    root.zone = root.zones[(i + step + n) % n]
+  }
+
+  // dx/dy are -1, 0 or 1. Lists and terms are vertical, models a row.
+  function navigate(dx, dy) {
+    if (root.zone === "lists") {
+      if (dy) {
+        var last = root.lists.length - 1
+        if (dy > 0 && root.selectedIndex >= last) { root.zone = "backend"; return }
+        root.selectedIndex = Math.max(0, Math.min(last, root.selectedIndex + dy))
+      } else if (dx > 0) root.zone = "terms"
+    } else if (root.zone === "terms") {
+      var n = root.personal.length
+      if (dx < 0) root.zone = "lists"
+      else if (dy > 0 && root.termIndex >= n - 1) {
+        root.inputMode = "term"; input.forceActiveFocus()
+      } else if (dy) root.termIndex = Math.max(0, Math.min(n - 1, root.termIndex + dy))
+    } else if (root.zone === "backend") {
+      if (dy < 0) root.zone = "lists"
+      else if (dy > 0) root.zone = "models"
+    } else {
+      if (dy < 0) root.zone = "backend"
+      else if (dx) root.modelIndex = Math.max(0, Math.min(root.models.length - 1,
+                                                          root.modelIndex + dx))
+    }
+  }
+
+  // Enter/space acts on the focused item; delete removes it.
+  function activate(remove) {
+    if (root.zone === "lists") {
+      if (!remove) root.toggleList(root.selectedIndex)
+    } else if (root.zone === "terms") {
+      var t = root.personal[Math.min(root.termIndex, root.personal.length - 1)]
+      if (t) root.removeTerm(t.term)     // enter and delete both remove
+    } else if (root.zone === "backend") {
+      if (!remove && root.gpuAvailable) root.setBackend(root.onGpu ? "cpu" : "gpu")
+    } else {
+      var m = root.models[root.modelIndex]
+      if (!m) return
+      if (remove) { if (m.installed && !m.active) root.removeModel(m.name) }
+      else root.useModel(m.name, m.installed, m.size)
+    }
+  }
+
+  // Removed terms, newest last, so u / ctrl+z can put them back.
+  property var undoStack: []
+  property string pendingNotice: ""
+
+  function undoRemove() {
+    if (root.busy || root.undoStack.length === 0) {
+      if (!root.busy) root.notice = "nothing to undo"
+      return
+    }
+    var e = root.undoStack[root.undoStack.length - 1]
+    root.undoStack = root.undoStack.slice(0, -1)
+    root.busy = true
+    root.pendingNotice = "restored " + e.term
+    editor.exec([root.bin, "add", e.term, "--to", e.list, "--json"])
+  }
+
   function removeTerm(t) {
     if (!t || root.busy || !root.selected) return
     root.busy = true
+    root.undoStack = root.undoStack.concat([{ term: t, list: root.selected.name }])
+    root.pendingNotice = "removed " + t + " \u00b7 u to undo"
     editor.exec([root.bin, "remove", t, "--from", root.selected.name, "--json"])
   }
 
@@ -139,7 +229,6 @@ Item {
   function setSurface(which, on) {
     var next = {}
     if (root.pendingSurfaces.bind !== undefined) next.bind = root.pendingSurfaces.bind
-    if (root.pendingSurfaces.icon !== undefined) next.icon = root.pendingSurfaces.icon
     next[which] = on
     root.pendingSurfaces = next
   }
@@ -149,9 +238,6 @@ Item {
     if (root.pendingSurfaces.bind !== undefined
         && root.pendingSurfaces.bind !== root.savedSurfaces.bind)
       jobs.push(["bind", root.pendingSurfaces.bind])
-    if (root.pendingSurfaces.icon !== undefined
-        && root.pendingSurfaces.icon !== root.savedSurfaces.icon)
-      jobs.push(["icon", root.pendingSurfaces.icon])
     root.pendingSurfaces = ({})
     for (var i = 0; i < jobs.length; i++)
       Quickshell.execDetached([root.bin, "surface", jobs[i][0],
@@ -187,6 +273,14 @@ Item {
     modelProc.exec([root.bin, "rm-model", name])
   }
 
+  // The switch needs root, and the polkit prompt cannot take a password while
+  // this panel holds exclusive keyboard focus, so get out of its way first.
+  function setBackend(to) {
+    if (root.busy || (to === "gpu") === root.onGpu) return
+    root.dismiss()
+    backendProc.exec([root.bin, "backend", to, "--json"])
+  }
+
   function cancelDownload() {
     dlCancel.exec([root.bin, "download", "--cancel", "--json"])
     root.dl = ({ active: false })
@@ -201,7 +295,7 @@ Item {
   function applyOnClose() {
     root.commitSurfaces()
     if (!root.autoapply) return
-    if (!root.state || !root.state.dirty) return
+    if (!root.jstate || !root.jstate.dirty) return
     autoApplyProc.exec([root.bin, "apply", "--auto"])
   }
 
@@ -253,7 +347,7 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         if (!text || !text.length) return
-        try { root.state = JSON.parse(text); root.notice = "" }
+        try { root.jstate = JSON.parse(text); root.notice = "" }
         catch (e) { root.notice = "bad state from jargon" }
       }
     }
@@ -271,12 +365,16 @@ Item {
       onStreamFinished: {
         root.busy = false
         if (!text || !text.length) return
-        try { root.state = JSON.parse(text); root.notice = "" } catch (e) {}
+        try { root.jstate = JSON.parse(text); root.notice = root.pendingNotice } catch (e) {}
+        if (root.pendingNotice !== "") noticeFade.restart()
+        root.pendingNotice = ""
       }
     }
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: { if (text && text.length) { root.busy = false; root.notice = text.trim() } }
+      onStreamFinished: {
+        if (text && text.length) { root.busy = false; root.pendingNotice = ""; root.notice = text.trim() }
+      }
     }
     function exec(cmd) { editor.command = cmd; editor.running = true }
   }
@@ -355,6 +453,19 @@ Item {
   }
 
   Process {
+    id: backendProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var msg = "voxtype backend unchanged"
+        try { msg = "voxtype now running on " + JSON.parse(text).accel } catch (e) {}
+        Quickshell.execDetached(["notify-send", "Jargon", msg])
+      }
+    }
+    function exec(cmd) { backendProc.command = cmd; backendProc.running = true }
+  }
+
+  Process {
     id: applier
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector {
@@ -404,12 +515,25 @@ Item {
           // While the term field has focus, every key belongs to it.
           if (input.activeFocus) return
           if (event.key === Qt.Key_Escape) { root.dismiss(); event.accepted = true }
-          else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) {
-            root.selectedIndex = Math.min(root.groups.length - 1, root.selectedIndex + 1); event.accepted = true
+          else if (event.key === Qt.Key_Tab) {
+            root.moveZone(1); event.accepted = true
+          } else if (event.key === Qt.Key_Backtab) {
+            root.moveZone(-1); event.accepted = true
+          } else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) {
+            root.navigate(0, 1); event.accepted = true
           } else if (event.key === Qt.Key_Up || event.key === Qt.Key_K) {
-            root.selectedIndex = Math.max(0, root.selectedIndex - 1); event.accepted = true
+            root.navigate(0, -1); event.accepted = true
+          } else if (event.key === Qt.Key_Right || event.key === Qt.Key_L) {
+            root.navigate(1, 0); event.accepted = true
+          } else if (event.key === Qt.Key_Left || event.key === Qt.Key_H) {
+            root.navigate(-1, 0); event.accepted = true
+          } else if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) {
+            root.activate(true); event.accepted = true
           } else if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            root.toggleList(root.selectedIndex); event.accepted = true
+            root.activate(false); event.accepted = true
+          } else if (event.key === Qt.Key_U
+                     || (event.key === Qt.Key_Z && (event.modifiers & Qt.ControlModifier))) {
+            root.undoRemove(); event.accepted = true
           } else if (event.key === Qt.Key_N) {
             root.inputMode = "newlist"; input.forceActiveFocus(); event.accepted = true
           } else if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) {
@@ -427,16 +551,36 @@ Item {
           Item {
             width: parent.width
             height: title.height
-            Text {
+            Row {
               id: title
-              text: "Dictation vocabulary"
-              color: root.foreground
-              font.family: Style.font.menuFamily
-              font.pixelSize: root.fontHeading
-              font.bold: true
+              spacing: Style.space(8)
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "\u{F07C5}"
+                color: root.selectedText
+                font.family: Style.font.menuFamily
+                font.pixelSize: root.fontHeading + 4
+              }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "JARGON"
+                color: root.foreground
+                font.family: Style.font.menuFamily
+                font.pixelSize: root.fontHeading
+                font.bold: true
+                font.letterSpacing: 2
+              }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Voxtype vocabulary context"
+                color: root.foreground
+                opacity: 0.5
+                font.family: Style.font.menuFamily
+                font.pixelSize: root.fontSmall
+              }
             }
-            // Which ways in are switched on. The last one cannot be turned
-            // off, or the plugin becomes unreachable.
+            // The Super+F9 shortcut. The ear in the bar is always the other
+            // way in: it is the plugin itself being enabled.
             Row {
               id: surfaceToggles
               anchors.right: parent.right
@@ -445,20 +589,14 @@ Item {
 
               Repeater {
                 model: [
-                  { key: "bind", other: "icon", glyph: "\u{F030C}",
+                  { key: "bind", glyph: "\u{F030C}",
                     onTip: "Super+F9 opens this panel. Click to turn the shortcut off.",
-                    offTip: "Keyboard shortcut is off. Click to bind Super+F9." },
-                  { key: "icon", other: "bind", glyph: "\u{F07C5}",
-                    onTip: "The ear icon is in your bar. Click to remove it.",
-                    offTip: "No bar icon. Click to put the ear in your bar." }
+                    offTip: "Keyboard shortcut is off. Click to bind Super+F9." }
                 ]
 
                 delegate: Text {
                   id: toggleGlyph
                   property bool isOn: root.surfaces[modelData.key] === true
-                  // Turning this one off would leave no way to open the panel.
-                  property bool isLast: isOn
-                                        && root.surfaces[modelData.other] !== true
                   text: modelData.glyph
                   color: root.foreground
                   opacity: isOn ? 0.9 : 0.22
@@ -470,21 +608,15 @@ Item {
                     anchors.fill: parent
                     anchors.margins: -Style.space(4)
                     hoverEnabled: true
-                    cursorShape: toggleGlyph.isLast ? Qt.ForbiddenCursor
-                                                    : Qt.PointingHandCursor
-                    onClicked: {
-                      if (toggleGlyph.isLast) return   // the tooltip already says why
-                      root.setSurface(modelData.key, !toggleGlyph.isOn)
-                    }
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.setSurface(modelData.key, !toggleGlyph.isOn)
                   }
 
                   // The shell's own tooltip: themed, overlaid, and delayed the
                   // same as every other tooltip in Omarchy.
                   PanelToolTip {
                     visible: toggleHover.containsMouse
-                    text: toggleGlyph.isLast
-                          ? "At least one opening trigger must be active"
-                          : (toggleGlyph.isOn ? modelData.onTip : modelData.offTip)
+                    text: toggleGlyph.isOn ? modelData.onTip : modelData.offTip
                     fontFamily: Style.font.menuFamily
                   }
                 }
@@ -496,7 +628,7 @@ Item {
               anchors.right: surfaceToggles.left
               anchors.rightMargin: Style.space(16)
               anchors.verticalCenter: title.verticalCenter
-              text: root.state ? (root.state.termCount + " terms") : "…"
+              text: root.jstate ? (root.jstate.termCount + " terms") : "…"
               color: root.foreground
               opacity: 0.55
               font.family: Style.font.menuFamily
@@ -517,25 +649,25 @@ Item {
                 width: Math.min(1, root.tokenCount / root.budget) * parent.width
                 height: parent.height
                 radius: 0
-                color: root.state && root.state.over ? "#e05561"
-                     : root.state && root.state.warn ? "#d9a343" : "#6aab73"
+                color: root.jstate && root.jstate.over ? root.badColor
+                     : root.jstate && root.jstate.warn ? root.warnColor : root.okColor
                 Behavior on width { NumberAnimation { duration: 120 } }
               }
             }
             Text {
               width: parent.width
               color: root.foreground
-              opacity: root.state && (root.state.over || root.state.warn) ? 1 : 0.6
+              opacity: root.jstate && (root.jstate.over || root.jstate.warn) ? 1 : 0.6
               font.family: Style.font.menuFamily
               font.pixelSize: root.fontSmall
               text: {
-                if (!root.state) return "reading…"
+                if (!root.jstate) return "reading…"
                 var base = root.tokenCount + " / " + root.budget + " tokens"
-                if (root.state.foreignTokens)
-                  base += "  ·  " + root.state.foreignTokens + " from teach-voxtype"
-                if (root.state.over)
+                if (root.jstate.foreignTokens)
+                  base += "  ·  " + root.jstate.foreignTokens + " from teach-voxtype"
+                if (root.jstate.over)
                   return base + "  —  over the cap; Whisper truncates silently, so turn a group off"
-                if (root.state.warn) return base + "  —  close to the cap"
+                if (root.jstate.warn) return base + "  —  close to the cap"
                 return base
               }
             }
@@ -549,12 +681,12 @@ Item {
             spacing: Style.spacing.md
 
             Item {
-              width: Math.round((parent.width - Style.spacing.md) * 0.58)
+              width: Math.round((parent.width - Style.spacing.md) * 0.70)
               height: parent.height
 
               Text {
                 id: listsHeading
-                text: "LISTS  ·  space toggles  ·  n makes a new one"
+                text: "LISTS  ·  arrows move  ·  space toggles  ·  n new  ·  del removes"
                 color: root.foreground
                 opacity: 0.4
                 font.family: Style.font.menuFamily
@@ -583,7 +715,7 @@ Item {
                     id: rowMouse
                     anchors.fill: parent
                     hoverEnabled: true
-                    onEntered: root.selectedIndex = index
+                    onEntered: { root.selectedIndex = index; root.zone = "lists" }
                     onClicked: root.toggleList(index)
                   }
 
@@ -628,7 +760,7 @@ Item {
                         anchors.verticalCenter: label.verticalCenter
                         visible: index === root.selectedIndex
                         text: "×"
-                        color: rowRmMouse.containsMouse ? "#e05561" : root.selectedText
+                        color: rowRmMouse.containsMouse ? root.badColor : root.selectedText
                         opacity: rowRmMouse.containsMouse ? 1 : 0.45
                         font.family: Style.font.menuFamily
                         font.pixelSize: root.fontBody
@@ -671,9 +803,18 @@ Item {
             }
 
             Item {
-              width: parent.width - Math.round((parent.width - Style.spacing.md) * 0.58)
+              width: parent.width - Math.round((parent.width - Style.spacing.md) * 0.70)
                      - Style.spacing.md
               height: parent.height
+
+              // Slightly lighter panel so the editing column reads as its own area.
+              Rectangle {
+                z: -1
+                anchors.fill: parent
+                anchors.margins: -Style.space(6)
+                radius: 0
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+              }
 
               Text {
                 id: termsHeading
@@ -702,7 +843,9 @@ Item {
                   width: termList.width
                   height: termText.height + Style.space(8)
                   radius: 0
-                  color: termMouse.containsMouse ? root.selectedBackground : "transparent"
+                  readonly property bool current: root.zone === "terms" && index === root.termIndex
+                  readonly property bool lit: termMouse.containsMouse || current
+                  color: lit ? root.selectedBackground : "transparent"
 
                   MouseArea {
                     id: termMouse
@@ -716,7 +859,7 @@ Item {
                     x: Style.space(10)
                     anchors.verticalCenter: parent.verticalCenter
                     text: modelData.term
-                    color: termMouse.containsMouse ? root.selectedText : root.foreground
+                    color: lit ? root.selectedText : root.foreground
                     font.family: Style.font.menuFamily
                     font.pixelSize: root.fontBody
                   }
@@ -725,10 +868,10 @@ Item {
                     anchors.right: parent.right
                     anchors.rightMargin: Style.space(10)
                     anchors.verticalCenter: parent.verticalCenter
-                    text: termMouse.containsMouse ? "remove"
+                    text: lit ? (current ? "remove  \u23ce" : "remove")
                           : (modelData.hits > 0 ? modelData.hits + " used" : "")
-                    color: termMouse.containsMouse ? root.selectedText : root.foreground
-                    opacity: termMouse.containsMouse ? 0.9 : 0.45
+                    color: lit ? root.selectedText : root.foreground
+                    opacity: lit ? 0.9 : 0.45
                     font.family: Style.font.menuFamily
                     font.pixelSize: root.fontSmall
                   }
@@ -754,11 +897,11 @@ Item {
                 width: parent.width
                 height: input.height + Style.space(14)
                 radius: 0
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
-                border.width: 1
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
+                border.width: input.activeFocus ? 2 : 1
                 border.color: input.activeFocus
                   ? root.selectedBackground
-                  : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+                  : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.45)
 
                 MouseArea {
                   anchors.fill: parent
@@ -783,6 +926,14 @@ Item {
                     else root.addTerm(text)
                     text = ""
                     root.inputMode = "term"
+                  }
+
+                  Keys.onUpPressed: {
+                    if (root.inputMode === "term" && root.personal.length > 0) {
+                      root.zone = "terms"
+                      root.termIndex = root.personal.length - 1
+                      keyCatcher.forceActiveFocus()
+                    }
                   }
 
                   Keys.onEscapePressed: {
@@ -816,15 +967,100 @@ Item {
             spacing: Style.space(6)
             visible: root.models.length > 0
 
+            Row {
+              spacing: Style.space(10)
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "MODEL"
+                      + (root.jstate && root.jstate.models && root.jstate.models.onDisk
+                         ? "  ·  " + root.jstate.models.onDisk + " on disk" : "")
+                      + "  ·  running on"
+                color: root.foreground
+                opacity: 0.4
+                font.family: Style.font.menuFamily
+                font.pixelSize: root.fontSmall
+                font.letterSpacing: 1
+              }
+
+              // CPU | GPU: which build of voxtype is running. Switching asks
+              // for your password and restarts voxtype.
+              // Wrapper so the focus ring can be drawn around the Row, which
+              // cannot host an anchored child itself.
+              Item {
+                anchors.verticalCenter: parent.verticalCenter
+                width: backendToggle.width
+                height: backendToggle.height
+
+                Rectangle {
+                  z: 2
+                  visible: root.zone === "backend"
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(3)
+                  color: "transparent"
+                  border.width: 2
+                  border.color: root.selectedText
+                }
+
+              Row {
+                id: backendToggle
+
+                Repeater {
+                  model: ["cpu", "gpu"]
+                  delegate: Rectangle {
+                    readonly property bool current: (modelData === "gpu") === root.onGpu
+                    readonly property bool usable: modelData === "cpu" || root.gpuAvailable
+                    width: beText.width + Style.space(14)
+                    height: beText.height + Style.space(6)
+                    radius: 0
+                    color: current ? root.selectedBackground
+                           : (beMouse.containsMouse && usable
+                              ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
+                              : "transparent")
+                    border.width: 1
+                    border.color: current ? root.selectedBackground
+                                  : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.22)
+
+                    Text {
+                      id: beText
+                      anchors.centerIn: parent
+                      text: modelData.toUpperCase()
+                      color: parent.current ? root.selectedText : root.foreground
+                      opacity: parent.current ? 1 : (parent.usable ? 0.6 : 0.25)
+                      font.family: Style.font.menuFamily
+                      font.pixelSize: root.fontSmall
+                      font.bold: parent.current
+                    }
+
+                    MouseArea {
+                      id: beMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: parent.current || !parent.usable
+                                   ? Qt.ArrowCursor : Qt.PointingHandCursor
+                      onClicked: if (parent.usable) root.setBackend(modelData)
+                    }
+
+                    PanelToolTip {
+                      visible: beMouse.containsMouse && !parent.current
+                      text: parent.usable ? "Switch (asks for password, restarts voxtype)"
+                                          : "No GPU build installed"
+                      fontFamily: Style.font.menuFamily
+                    }
+                  }
+                }
+              }
+              }
+            }
+
             Text {
-              text: "MODEL  ·  running on " + root.accel
-                    + (root.state && root.state.models && root.state.models.onDisk
-                       ? "  ·  " + root.state.models.onDisk + " on disk" : "")
+              width: parent.width
+              wrapMode: Text.WordWrap
+              text: "GPU is much faster on bigger models; CPU saves battery on a laptop."
               color: root.foreground
-              opacity: 0.4
+              opacity: 0.35
               font.family: Style.font.menuFamily
               font.pixelSize: root.fontSmall
-              font.letterSpacing: 1
             }
 
             // Download in flight: progress and a way out of it.
@@ -853,7 +1089,7 @@ Item {
                       width: parent.width * ((root.dl && root.dl.percent ? root.dl.percent : 0) / 100)
                       height: parent.height
                       radius: 0
-                      color: "#6aab73"
+                      color: root.okColor
                       Behavior on width { NumberAnimation { duration: 200 } }
                     }
                   }
@@ -877,9 +1113,9 @@ Item {
                   height: cancelText.height + Style.space(10)
                   radius: 0
                   color: cancelMouse.containsMouse
-                         ? Qt.rgba(0.88, 0.33, 0.38, 0.9) : "transparent"
+                         ? Qt.rgba(root.badColor.r, root.badColor.g, root.badColor.b, 0.9) : "transparent"
                   border.width: 1
-                  border.color: Qt.rgba(0.88, 0.33, 0.38, 0.6)
+                  border.color: Qt.rgba(root.badColor.r, root.badColor.g, root.badColor.b, 0.6)
 
                   MouseArea {
                     id: cancelMouse
@@ -893,7 +1129,7 @@ Item {
                     id: cancelText
                     anchors.centerIn: parent
                     text: "cancel"
-                    color: cancelMouse.containsMouse ? "#ffffff" : root.foreground
+                    color: cancelMouse.containsMouse ? root.background : root.foreground
                     opacity: cancelMouse.containsMouse ? 1 : 0.7
                     font.family: Style.font.menuFamily
                     font.pixelSize: root.fontSmall
@@ -918,8 +1154,10 @@ Item {
                   width: chipRow.width + Style.space(18)
                   radius: 0
                   color: modelData.active ? root.selectedBackground : "transparent"
-                  border.width: 1
-                  border.color: modelData.active
+                  border.width: (root.zone === "models" && index === root.modelIndex) ? 2 : 1
+                  border.color: (root.zone === "models" && index === root.modelIndex)
+                    ? root.selectedText
+                    : modelData.active
                     ? root.selectedBackground
                     : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
                               modelData.installed ? 0.22 : 0.1)
@@ -965,7 +1203,7 @@ Item {
                       visible: modelChip.showRemove || modelChip.showDownload
                       text: modelChip.showDownload ? "\u2193" : "\u00d7"
                       color: endMouse.containsMouse
-                             ? (modelChip.showDownload ? root.foreground : "#e05561")
+                             ? (modelChip.showDownload ? root.foreground : root.badColor)
                              : root.foreground
                       opacity: endMouse.containsMouse ? 1 : 0.4
                       font.family: Style.font.menuFamily
@@ -1004,11 +1242,11 @@ Item {
               width: parent.width - personalCount.width - Style.spacing.md
               elide: Text.ElideRight
               text: root.notice !== "" ? root.notice
-                    : (root.state && root.state.dirty
+                    : (root.jstate && root.jstate.dirty
                        ? (root.autoapply
                           ? "changes apply when you close  ·  ctrl+a for now"
                           : "unapplied changes  ·  ctrl+a to apply")
-                       : "space toggles  ·  a adds a word  ·  n new list")
+                       : "space toggles  ·  a adds a word  ·  n new list  ·  u undo")
               color: root.foreground
               opacity: root.notice !== "" ? 0.9 : 0.5
               font.family: Style.font.menuFamily
@@ -1018,8 +1256,8 @@ Item {
               id: personalCount
               anchors.right: parent.right
               anchors.verticalCenter: hint.verticalCenter
-              visible: root.state !== null
-              text: root.state && root.state.dirty ? "" : ""
+              visible: root.jstate !== null
+              text: root.jstate && root.jstate.dirty ? "" : ""
               color: root.foreground
               opacity: 0.45
               font.family: Style.font.menuFamily
