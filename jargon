@@ -346,9 +346,12 @@ def refuse(a, what, n):
 
 # ---------------------------------------------------------------- surfaces
 #
-# The panel opens from the ear icon in the bar (the plugin's own bar-widget,
-# present whenever the plugin is enabled) and, optionally, a Super+F9 binding.
-# Only the binding is ours to toggle; the icon is the plugin being on.
+# Two ways to open the panel: the ear icon in the bar and an optional Super+F9
+# binding. The icon is the plugin's own bar-widget. Removing it from the bar
+# would disable the whole plugin, so "hiding" it is a flag the widget honours by
+# collapsing to nothing -- it stays in the layout and the plugin stays on.
+# Hiding the last way in is refused.
+UI_FILE = os.path.join(STATE_DIR, "ui.json")
 
 BINDINGS = os.path.expanduser("~/.config/hypr/bindings.lua")
 PLUGIN_ID = "rufussed.jargon"
@@ -365,8 +368,25 @@ def bind_on():
         return False
 
 
+def icon_shown():
+    try:
+        with open(UI_FILE) as f:
+            return not json.load(f).get("iconHidden", False)
+    except (OSError, ValueError):
+        return True
+
+
+def set_icon(show):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = UI_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"iconHidden": not show}, f)
+    os.replace(tmp, UI_FILE)            # the bar widget watches this file
+    return "bar icon shown" if show else "bar icon hidden"
+
+
 def surfaces_state():
-    return {"bind": bind_on()}
+    return {"bind": bind_on(), "icon": icon_shown()}
 
 
 def set_bind(on):
@@ -404,10 +424,23 @@ def cmd_surface(a, state):
         else:
             print(f"\n  keybinding (Super+F9)  "
                   f"{GRN + 'on' + OFF if cur['bind'] else DIM + 'off' + OFF}")
-            print(f"\n{DIM}jargon surface bind on|off{OFF}\n")
+            print(f"  bar icon               "
+                  f"{GRN + 'shown' + OFF if cur['icon'] else DIM + 'hidden' + OFF}")
+            print(f"\n{DIM}jargon surface icon on|off  ·  jargon surface bind on|off{OFF}\n")
         return
 
-    msg = set_bind(a.value == "on")
+    want = a.value == "on"
+    other = "icon" if a.which == "bind" else "bind"
+    if not want and not cur[other]:
+        msg = (f"that is the only way left to open the panel; turn the "
+               f"{'bar icon' if other == 'icon' else 'keybinding'} on first")
+        if getattr(a, "json", False):
+            print(json.dumps({"refused": msg, **cur}))
+        else:
+            die(msg)
+        return
+
+    msg = set_bind(want) if a.which == "bind" else set_icon(want)
     if getattr(a, "json", False):
         print(json.dumps({"ok": msg, **surfaces_state()}))
     else:
@@ -1113,8 +1146,8 @@ def main():
     us.add_argument("--rescan", action="store_true")
     js = sub.add_parser("json", help="machine-readable state (for the panel)")
     js.add_argument("--no-scan", action="store_true")
-    sf = sub.add_parser("surface", help="the Super+F9 keybinding")
-    sf.add_argument("which", nargs="?", choices=["bind"])
+    sf = sub.add_parser("surface", help="keybinding and bar icon")
+    sf.add_argument("which", nargs="?", choices=["bind", "icon"])
     sf.add_argument("value", nargs="?", choices=["on", "off"])
     sf.add_argument("--json", action="store_true")
     sub.add_parser("models", help="list whisper models")

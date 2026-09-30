@@ -544,9 +544,10 @@ undone:
   its own manifest's `__sourceDir`, so nothing needs to be on PATH.
 - The cost is the one that addendum names: the enabled flag is per id, so
   taking the ear out of the bar disables the whole plugin, keybinding included.
-  That is accepted -- the ear *is* the plugin being on. The panel's second
-  toggle (bar icon) is gone; only the Super+F9 binding remains togglable, and
-  `jargon surface` only handles `bind`.
+  So "hide icon" is a flag, not a removal: `jargon surface icon off` writes
+  `~/.config/jargon/ui.json` and `BarWidget.qml` (which watches that file)
+  collapses to zero size while staying in the layout. The last-way-in rule
+  still applies: the icon cannot be hidden while the keybinding is off.
 - `install.sh` migrates an older install: it removes `rufussed.jargon-icon`
   and re-enables the single id into the bar's right section.
 

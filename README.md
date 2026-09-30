@@ -92,7 +92,8 @@ A good mnemonic: **F9 dictates, Super+F9 configures what it hears.**
 omarchy plugin remove rufussed.jargon
 ```
 
-That removes the plugin and the ear. If you added the keybinding, delete the
+That removes the plugin and the ear. (To just hide the ear, use the ear toggle
+in the panel instead.) If you added the keybinding, delete the
 `Jargon` block from `bindings.lua` (or turn the keyboard icon off in the panel
 first). Your lists live in `~/.config/jargon/`; delete that folder to remove
 them too. Voxtype's own `whisper.initial_prompt` keeps whatever Jargon last
@@ -129,8 +130,10 @@ Click the ear icon in your bar, or press **Super+F9** if you bound it.
 | `×` | delete a list, or click a word to remove it |
 | `esc` | close |
 
-Top right of the panel has a small keyboard toggle for the Super+F9
-keybinding.
+Top right of the panel has two small toggles — a keyboard and an ear — for the
+Super+F9 keybinding and the bar icon. Turning the icon off hides it without
+disabling the plugin (`jargon surface icon off`). One of the two always has to
+stay on, since otherwise nothing could open the panel again.
 
 Changes apply when you close the panel, and Voxtype restarts itself. There is
 no save button.

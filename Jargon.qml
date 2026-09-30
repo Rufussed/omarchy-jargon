@@ -71,7 +71,9 @@ Item {
   property var pendingSurfaces: ({})
   readonly property var surfaces: ({
     bind: root.pendingSurfaces.bind !== undefined
-          ? root.pendingSurfaces.bind : root.savedSurfaces.bind
+          ? root.pendingSurfaces.bind : root.savedSurfaces.bind,
+    icon: root.pendingSurfaces.icon !== undefined
+          ? root.pendingSurfaces.icon : root.savedSurfaces.icon
   })
   readonly property bool autoapply: jstate && jstate.autoapply !== undefined
                                     ? jstate.autoapply : true
@@ -229,6 +231,7 @@ Item {
   function setSurface(which, on) {
     var next = {}
     if (root.pendingSurfaces.bind !== undefined) next.bind = root.pendingSurfaces.bind
+    if (root.pendingSurfaces.icon !== undefined) next.icon = root.pendingSurfaces.icon
     next[which] = on
     root.pendingSurfaces = next
   }
@@ -238,6 +241,9 @@ Item {
     if (root.pendingSurfaces.bind !== undefined
         && root.pendingSurfaces.bind !== root.savedSurfaces.bind)
       jobs.push(["bind", root.pendingSurfaces.bind])
+    if (root.pendingSurfaces.icon !== undefined
+        && root.pendingSurfaces.icon !== root.savedSurfaces.icon)
+      jobs.push(["icon", root.pendingSurfaces.icon])
     root.pendingSurfaces = ({})
     for (var i = 0; i < jobs.length; i++)
       Quickshell.execDetached([root.bin, "surface", jobs[i][0],
@@ -579,8 +585,8 @@ Item {
                 font.pixelSize: root.fontSmall
               }
             }
-            // The Super+F9 shortcut. The ear in the bar is always the other
-            // way in: it is the plugin itself being enabled.
+            // Which ways in are switched on. The last one cannot be turned
+            // off, or the panel becomes unreachable.
             Row {
               id: surfaceToggles
               anchors.right: parent.right
@@ -589,14 +595,20 @@ Item {
 
               Repeater {
                 model: [
-                  { key: "bind", glyph: "\u{F030C}",
+                  { key: "bind", other: "icon", glyph: "\u{F030C}",
                     onTip: "Super+F9 opens this panel. Click to turn the shortcut off.",
-                    offTip: "Keyboard shortcut is off. Click to bind Super+F9." }
+                    offTip: "Keyboard shortcut is off. Click to bind Super+F9." },
+                  { key: "icon", other: "bind", glyph: "\u{F07C5}",
+                    onTip: "The ear icon is in your bar. Click to hide it.",
+                    offTip: "Bar icon is hidden. Click to show the ear in your bar." }
                 ]
 
                 delegate: Text {
                   id: toggleGlyph
                   property bool isOn: root.surfaces[modelData.key] === true
+                  // Turning this one off would leave no way to open the panel.
+                  property bool isLast: isOn
+                                        && root.surfaces[modelData.other] !== true
                   text: modelData.glyph
                   color: root.foreground
                   opacity: isOn ? 0.9 : 0.22
@@ -608,15 +620,21 @@ Item {
                     anchors.fill: parent
                     anchors.margins: -Style.space(4)
                     hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.setSurface(modelData.key, !toggleGlyph.isOn)
+                    cursorShape: toggleGlyph.isLast ? Qt.ForbiddenCursor
+                                                    : Qt.PointingHandCursor
+                    onClicked: {
+                      if (toggleGlyph.isLast) return   // the tooltip already says why
+                      root.setSurface(modelData.key, !toggleGlyph.isOn)
+                    }
                   }
 
                   // The shell's own tooltip: themed, overlaid, and delayed the
                   // same as every other tooltip in Omarchy.
                   PanelToolTip {
                     visible: toggleHover.containsMouse
-                    text: toggleGlyph.isOn ? modelData.onTip : modelData.offTip
+                    text: toggleGlyph.isLast
+                          ? "At least one opening trigger must be active"
+                          : (toggleGlyph.isOn ? modelData.onTip : modelData.offTip)
                     fontFamily: Style.font.menuFamily
                   }
                 }
