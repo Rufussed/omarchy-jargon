@@ -25,7 +25,7 @@ barely seen:
 |---|---|
 | GLB | *GOB* |
 | caching | *casing* |
-| prefetching | *pre-veging* |
+| Omarchy | *Amachi* |
 | Hyprland | *Hyperland* |
 
 Voxtype can already fix this. It has a setting called `whisper.initial_prompt`
