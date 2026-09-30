@@ -5,8 +5,11 @@
   "version": "0.3.0",
   "author": "rufussed",
   "license": "MIT",
-  "description": "I've got all the best words. If Voxtype keeps mishearing you, give it the vocabulary you use (3D, coding, knitting), pick the Whisper model size, and run it on CPU or GPU.",
-  "kinds": ["overlay", "bar-widget"],
+  "description": "\"I've got all the best words.\" If Voxtype keeps mishearing your voice, take control. Give it the vocabulary you actually use — 3D creation, coding, knitting, whatever your words are. Change the size of the Whisper model that does the listening. Choose whether it runs on your CPU or your GPU, depending on what matters more, speed or battery.",
+  "kinds": [
+    "overlay",
+    "bar-widget"
+  ],
   "keepLoaded": true,
   "entryPoints": {
     "overlay": "Jargon.qml",
@@ -16,7 +19,13 @@
     "displayName": "Jargon",
     "description": "Voxtype vocabulary context",
     "category": "System",
-    "aliases": ["dictation", "vocabulary", "voxtype", "whisper", "words"],
+    "aliases": [
+      "dictation",
+      "vocabulary",
+      "voxtype",
+      "whisper",
+      "words"
+    ],
     "defaultSection": "right",
     "allowMultiple": false
   }
