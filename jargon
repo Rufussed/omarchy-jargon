@@ -8,7 +8,7 @@ Vocabulary lives in *lists*. Every list is editable and removable, including
 the ones shipped with jargon: those are only a starting point, copied into
 your state on first run. Enabled lists are concatenated into the prompt.
 """
-import argparse, json, os, re, shutil, signal, subprocess, sys, textwrap, time
+import argparse, json, os, re, shutil, signal, subprocess, sys, tempfile, textwrap, time
 
 HERE = os.path.dirname(os.path.realpath(__file__))  # realpath: we are run through a symlink
 SEED = os.path.join(HERE, "library", "groups.json")
@@ -41,6 +41,37 @@ def load_seed():
 
 def blank_list(description=""):
     return {"description": description, "terms": [], "enabled": False}
+
+
+def atomic_write(path, text):
+    """Replace `path` with `text` without ever following a planted symlink.
+
+    The temp file is created exclusively (O_CREAT|O_EXCL, so an existing file
+    or symlink at that name is an error, never a target), in the destination
+    directory with an unpredictable name, written through the descriptor we
+    were handed, and only that file is renamed over `path`.
+    """
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def append_nofollow(path, text):
+    """Append to `path`, refusing to follow a symlink at that name."""
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "a") as f:
+        f.write(text)
 
 
 def load_state():
@@ -153,10 +184,9 @@ def audit(s, note=""):
         libs = s.get("libraries", {})
         snap = {n: {"groups": l.get("groups", []), "terms": len(l.get("terms", []))}
                 for n, l in libs.items()}
-        with open(AUDIT, "a") as f:
-            f.write(json.dumps({"at": now(), "pid": os.getpid(),
-                                "argv": sys.argv[1:], "active": s.get("active"),
-                                "note": note, "libraries": snap}) + "\n")
+        append_nofollow(AUDIT, json.dumps({"at": now(), "pid": os.getpid(),
+                                           "argv": sys.argv[1:], "active": s.get("active"),
+                                           "note": note, "libraries": snap}) + "\n")
     except Exception:
         pass  # never let logging break a write
 
@@ -164,11 +194,7 @@ def audit(s, note=""):
 def save_state(s):
     audit(s)
     os.makedirs(STATE_DIR, exist_ok=True)
-    tmp = f"{STATE}.{os.getpid()}.tmp"
-    with open(tmp, "w") as f:
-        json.dump(s, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, STATE)
+    atomic_write(STATE, json.dumps(s, indent=2) + "\n")
 
 
 def voxtype(*args, check=True):
@@ -239,9 +265,8 @@ def _load_vocab():
         _BPE["budget"] = n_text_ctx // 2
         _BPE["model"] = name
         os.makedirs(CACHE_DIR, exist_ok=True)
-        with open(cache, "w") as f:
-            json.dump({"budget": _BPE["budget"],
-                       "vocab": [t.decode("latin-1") for t in toks]}, f)
+        atomic_write(cache, json.dumps({"budget": _BPE["budget"],
+                                        "vocab": [t.decode("latin-1") for t in toks]}))
     except Exception:
         pass
 
@@ -378,10 +403,7 @@ def icon_shown():
 
 def set_icon(show):
     os.makedirs(STATE_DIR, exist_ok=True)
-    tmp = UI_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump({"iconHidden": not show}, f)
-    os.replace(tmp, UI_FILE)            # the bar widget watches this file
+    atomic_write(UI_FILE, json.dumps({"iconHidden": not show}))  # the bar widget watches this
     return "bar icon shown" if show else "bar icon hidden"
 
 
