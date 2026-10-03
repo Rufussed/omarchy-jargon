@@ -85,6 +85,15 @@ A good mnemonic: **F9 dictates, Super+F9 configures what it hears.**
 
 ## Removing it
 
+If you want to clear the vocabulary prompt Jargon last wrote, run this
+**before removing the plugin**:
+
+```bash
+~/.config/omarchy/plugins/rufussed.jargon/jargon reset
+```
+
+Then remove the plugin:
+
 ```bash
 omarchy plugin remove rufussed.jargon
 ```
@@ -93,8 +102,8 @@ That removes the plugin and the ear. (To just hide the ear, use the ear toggle
 in the panel instead.) If you added the keybinding, delete the
 `Jargon` block from `bindings.lua` (or turn the keyboard icon off in the panel
 first). Your lists live in `~/.config/jargon/`; delete that folder to remove
-them too. Voxtype's own `whisper.initial_prompt` keeps whatever Jargon last
-wrote; `jargon reset` clears it.
+them too. Unless you reset it first, Voxtype's own `whisper.initial_prompt`
+keeps whatever Jargon last wrote.
 
 ## What it touches
 
@@ -144,7 +153,21 @@ nothing.
 
 ## From the terminal
 
-Everything the panel does, the CLI does:
+Everything the panel does, the CLI does. Standard installation bundles the
+CLI at `~/.config/omarchy/plugins/rufussed.jargon/jargon`; it does not add a
+`jargon` command to your PATH. You can run that full path directly, for example:
+
+```bash
+~/.config/omarchy/plugins/rufussed.jargon/jargon lists
+```
+
+For the shorter examples below, define a function in your Bash or Zsh session:
+
+```bash
+jargon() { "$HOME/.config/omarchy/plugins/rufussed.jargon/jargon" "$@"; }
+```
+
+This shortcut is optional; the panel needs no terminal setup.
 
 ```bash
 jargon                      # what is on and what it costs
