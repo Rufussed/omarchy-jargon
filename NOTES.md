@@ -387,7 +387,7 @@ warns, and term usage is logged.
 library/groups.json   7 curated groups
 jargon                CLI; owns initial_prompt only, never text.replacements
 (repo root)           rufussed.jargon — overlay + bar-widget, keepLoaded
-install.sh            links the CLI, copies the plugin, enables, rescans
+install.sh            former development installer; removed for marketplace clarity
 ```
 
 **Summoning.** `o.bind("SUPER + F9", "Dictation vocabulary", "omarchy-shell
@@ -410,7 +410,7 @@ list, which is what the budget question actually needs.
 
 - **The hot-reload watcher does not follow a symlinked plugin directory.**
   Symlinking `plugin/` into `~/.config/omarchy/plugins/` silently serves stale
-  QML forever. `install.sh` copies instead.
+  QML forever. The standard `omarchy plugin add` command creates a real clone.
 - **`keepLoaded: true` overlays survive `rescanPlugins`.** The component is
   instantiated at startup and is not destroyed by a rescan, so edits need
   `omarchy restart shell`. Matches the README's warning above about preferring
@@ -548,8 +548,9 @@ undone:
   `~/.config/jargon/ui.json` and `BarWidget.qml` (which watches that file)
   collapses to zero size while staying in the layout. The last-way-in rule
   still applies: the icon cannot be hidden while the keybinding is off.
-- `install.sh` migrates an older install: it removes `rufussed.jargon-icon`
-  and re-enables the single id into the bar's right section.
+- The former `install.sh` migration helper was removed. The standard
+  `omarchy plugin add <repo> --enable` path is the only supported installer;
+  the panel itself offers the optional Super+F9 binding.
 
 Also since then: CPU/GPU switch (`jargon backend cpu|gpu`, via `pkexec voxtype
 setup gpu`), arrow-key navigation, undo for removed words, and the panel's

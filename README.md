@@ -81,11 +81,6 @@ of the panel, or add the line yourself to `~/.config/hypr/bindings.lua`:
 o.bind("SUPER + F9", "Voxtype vocabulary context", "omarchy-shell shell toggle rufussed.jargon")
 ```
 
-Prefer a script? Clone the repo and run `./install.sh`. It does the same
-thing, adds the `jargon` command to your PATH, and binds Super+F9 (backing up
-`bindings.lua` first, and saying so instead of clobbering an existing
-binding). Pass `--no-bind` to skip the keybinding.
-
 A good mnemonic: **F9 dictates, Super+F9 configures what it hears.**
 
 ## Removing it
